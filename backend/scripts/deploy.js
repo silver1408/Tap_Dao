@@ -12,13 +12,28 @@ async function main() {
     
     const contractAddress = await dao.getAddress();
     console.log(`\n🎉 OffGridDAO deployed to: ${contractAddress}\n`);
+
+    const artifactPath = path.join(
+        process.cwd(),
+        'artifacts',
+        'contracts',
+        'OffGridDAO.sol',
+        'OffGridDAO.json'
+    );
+    const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
+    const deploymentPayload = {
+        contractName: 'OffGridDAO',
+        contractAddress,
+        abi: artifact.abi,
+        deployedAt: new Date().toISOString(),
+    };
     
     const addressFilePath = process.env.ADDRESS_FILE || path.join(process.cwd(), 'address.json');
     fs.mkdirSync(path.dirname(addressFilePath), { recursive: true });
-    fs.writeFileSync(addressFilePath, JSON.stringify({ contractAddress }, null, 2));
+    fs.writeFileSync(addressFilePath, JSON.stringify(deploymentPayload, null, 2));
 
     if (addressFilePath !== path.join(process.cwd(), 'address.json')) {
-        fs.writeFileSync(path.join(process.cwd(), 'address.json'), JSON.stringify({ contractAddress }, null, 2));
+        fs.writeFileSync(path.join(process.cwd(), 'address.json'), JSON.stringify(deploymentPayload, null, 2));
     }
 
     // Allocate tokens to all known voter wallets

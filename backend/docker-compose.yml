@@ -1,8 +1,6 @@
 services:
   hardhat:
-    build:
-      context: ./backend
-    restart: unless-stopped
+    build: .
     command: npx hardhat node --hostname 0.0.0.0
     ports:
       - "8545:8545"
@@ -16,26 +14,19 @@ services:
       start_period: 10s
 
   deploy:
-    build:
-      context: ./backend
+    build: .
     depends_on:
       hardhat:
         condition: service_healthy
     environment:
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
-    working_dir: /app
     volumes:
-      - ./backend:/app
-      - backend-node-modules:/app/node_modules
       - runtime-data:/app/runtime
-    restart: "no"
     command: sh -c "npx hardhat run scripts/deploy.js --network localhost"
 
   app:
-    build:
-      context: ./backend
-    restart: unless-stopped
+    build: .
     depends_on:
       hardhat:
         condition: service_healthy
@@ -45,34 +36,11 @@ services:
       PORT: 3001
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
-    working_dir: /app
     volumes:
-      - ./backend:/app
-      - backend-node-modules:/app/node_modules
       - runtime-data:/app/runtime
     ports:
       - "3001:3001"
-    command: sh -c "npm install && npm run dev"
-
-  frontend:
-    build:
-      context: ./frontend
-    restart: unless-stopped
-    working_dir: /app
-    depends_on:
-      app:
-        condition: service_started
-    environment:
-      VITE_API_URL: http://localhost:3001
-      VITE_SOCKET_URL: http://localhost:3001
-    volumes:
-      - ./frontend:/app
-      - frontend-node-modules:/app/node_modules
-    ports:
-      - "5173:5173"
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    command: node server.js
 
 volumes:
   runtime-data:
-  backend-node-modules:
-  frontend-node-modules:

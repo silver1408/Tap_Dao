@@ -1,8 +1,8 @@
 {
   "_format": "hh-sol-cache-2",
   "files": {
-    "C:\\Users\\Ishaan\\Desktop\\off_grid\\contracts\\OffGridDAO.sol": {
-      "lastModificationDate": 1775824093291,
+    "/app/contracts/OffGridDAO.sol": {
+      "lastModificationDate": 1775827266839,
       "contentHash": "0bc37a44537e48eaa6f6542806cef932",
       "sourceName": "contracts/OffGridDAO.sol",
       "solcConfig": {
@@ -37,9 +37,9 @@
         "OffGridDAO"
       ]
     },
-    "C:\\Users\\Ishaan\\Desktop\\off_grid\\contracts\\SimpleWallet.sol": {
-      "lastModificationDate": 1775815945392,
-      "contentHash": "1e9a270ea40eaf76ebf96284cb796170",
+    "/app/contracts/SimpleWallet.sol": {
+      "lastModificationDate": 1775827266839,
+      "contentHash": "b3edbbad6a466b3a84b62eb724f11739",
       "sourceName": "contracts/SimpleWallet.sol",
       "solcConfig": {
         "version": "0.8.24",
