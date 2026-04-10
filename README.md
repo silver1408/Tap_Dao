@@ -1,145 +1,74 @@
-## TapDAO — Project Architecture & Workflow
+# 🏛️ Off-Grid DAO — Community Voting Kiosk
+
+A decentralized, local-first Ethereum voting kiosk built for hackathons. This repository allows communities to run a completely local Ethereum Virtual Machine (EVM) to track secure, sybil-resistant votes using physical NFC transit cards mapped to cryptographic private keys.
 
 ---
 
-### Folder Structure
-
-```
-tapDAO/
-├── contracts/
-│   ├── TapDAO.sol          # Main DAO contract
-│   └── hardhat.config.js   # Sepolia testnet config
-├── backend/
-│   ├── index.js            # Express server
-│   ├── nfcAuth.js          # UID → wallet logic
-│   └── .env                # RPC URL, private key
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx
-│   │   ├── components/
-│   │   │   ├── ProposalCard.jsx
-│   │   │   ├── VoteResult.jsx
-│   │   │   └── WalletBadge.jsx
-│   │   ├── hooks/
-│   │   │   └── useContract.js   # Ethers.js contract hook
-│   │   └── utils/
-│   │       └── api.js           # Backend API calls
-│   └── vite.config.js
-└── README.md
-```
+## 🛠️ Architecture Overview
+*   **Blockchain**: Hardhat Local Node (EVM running entirely on `localhost:8545`)
+*   **Smart Contract**: `OffGridDAO.sol` (Single-choice voting, strictly prevents double-voting)
+*   **Backend / Bridge**: Node.js + Express (Wallet custodian mapping physical cards to private keys via Ethers.js)
+*   **Frontend**: Vanilla HTML/JS with Glassmorphism UI (Receives WebSocket updates from the backend)
 
 ---
 
-### Smart Contract Layer (`TapDAO.sol`)
+## 🚀 How to Run on Ubuntu Linux (For Your Teammates)
 
-This is your single Solidity file. It holds three things — a proposal store, a voter registry, and the NFC vote function.
+If you are cloning this repository on Ubuntu, follow these exact steps to run the local blockchain and server. **Note:** Node.js projects do not use `requirements.txt` like Python. Instead, the `package.json` file handles all dependencies automatically!
 
-```solidity
-struct Proposal {
-  string title;
-  uint yesVotes;
-  uint noVotes;
-  bool active;
-}
-
-mapping(uint => Proposal) public proposals;
-mapping(uint => mapping(address => bool)) public hasVoted;
-
-function voteWithNFC(uint proposalId, bool support, bytes memory sig) public {
-  bytes32 hash = keccak256(abi.encodePacked(proposalId, support));
-  address voter = recoverSigner(hash, sig);
-  require(!hasVoted[proposalId][voter], "Already voted");
-  hasVoted[proposalId][voter] = true;
-  if (support) proposals[proposalId].yesVotes++;
-  else proposals[proposalId].noVotes++;
-}
+### Step 1: Install Dependencies
+Open your Ubuntu terminal and make sure you have Node.js installed. Then install all project dependencies from the `package.json` file:
+```bash
+# If you don't have Node installed: sudo apt install nodejs npm
+npm install
 ```
 
-Deploy this to **Sepolia testnet** using Hardhat. Save the deployed contract address.
+### Step 2: Start the Local Blockchain (Terminal 1)
+Boot up the Hardhat EVM (Ethereum Virtual Machine). This will generate 20 default crypto accounts for testing.
+```bash
+npx hardhat node
+```
+*(Leave this terminal window open. This is your active blockchain.)*
+
+### Step 3: Deploy the Smart Contract (Terminal 2)
+Open a new terminal tab. Compile the Solidity code and deploy it to your local blockchain:
+```bash
+npx hardhat compile
+npx hardhat run scripts/deploy.js --network localhost
+```
+*(This script will create `address.json` so the server knows where the contract lives).*
+
+### Step 4: Start the Web Server (Terminal 2)
+In that same second terminal window, start the Node.js bridge server:
+```bash
+node server.js
+```
+Your dashboard is now live! Open your browser to **http://localhost:3001**
 
 ---
 
-### Backend Layer (`Node.js + Express`)
+## 📱 Setting up the iPhone NFC Shortcut
 
-Three endpoints only. Keep it minimal.
+To use real physical NFC cards (like Metro cards) to trigger votes, you need to configure an iPhone automation. Because the phone is wireless, it cannot connect to `localhost`. It needs the **exact Local Wi-Fi IP Address** of the Ubuntu laptop running the server.
 
+### 1. Find the Ubuntu Laptop's IP Address
+On the Ubuntu machine, open a terminal and run:
+```bash
+hostname -I
 ```
-POST /nfc-auth
-  → receives { uid }
-  → hashes uid with keccak256
-  → creates ethers.Wallet from hash
-  → signs the vote payload
-  → returns { address, signature }
+*(Look for the number starting with `192.168.x.x` or `10.0.x.x`. Example: `192.168.1.15`)*
 
-GET /proposals
-  → reads proposals from contract via Ethers.js provider
-  → returns array of proposal objects
+### 2. Configure the iPhone Shortcut
+Make sure the iPhone and the Ubuntu laptop are connected to the exact same Wi-Fi network (or laptop hotspot). 
+Open the **Shortcuts App** on iPhone:
+1. Go to **Automations** → **+** → **Create Personal Automation**
+2. Choose **NFC** → **Scan** your Metro Card.
+3. Add Action: **Get Contents of URL**
+4. Set the URL to your Ubuntu IP address plus port 3001 and the scanning endpoint. Example:
+   ```
+   http://192.168.1.15:3001/scan?cardId=Metro_Card_001
+   ```
+5. Uncheck "Ask before running" and hit Done!
 
-POST /create-proposal
-  → admin only (your MetaMask wallet)
-  → calls contract.createProposal(title)
-```
-
-Your `.env` needs just two things — `SEPOLIA_RPC_URL` (get from Alchemy free tier) and your `ADMIN_PRIVATE_KEY` (your MetaMask wallet for creating proposals).
-
----
-
-### Frontend Layer (`Vite + React`)
-
-Three screens, no routing library needed — just a `useState` for current view.
-
-**Screen 1 — Home / Proposal List.** Fetches `GET /proposals` on load. Shows proposal cards with title, yes/no vote counts, and a "Vote" button per card.
-
-**Screen 2 — Vote Screen.** When user clicks Vote on a proposal, this screen shows the proposal detail and a big "Tap Your Card to Vote YES / NO" button pair. On click it calls `POST /nfc-auth` with the UID (received from the iPhone Shortcut webhook) and then calls `voteWithNFC` on the contract.
-
-**Screen 3 — Result Screen.** Live reads `proposals[id]` from the contract every 5 seconds and shows a yes/no bar chart. This is your demo money shot.
-
----
-
-### iPhone Shortcut (the NFC bridge)
-
-This replaces any native app entirely. Set it up once in 2 minutes.
-
-```
-Shortcut steps:
-1. "Scan NFC Tag"         → reads card UID
-2. "Get contents of URL"  → POST to http://YOUR_IP:3000/nfc-auth
-                            Body: { "uid": [NFC tag UID] }
-3. "Show notification"    → "Vote submitted!"
-```
-
-Run your Node server on your laptop, make sure your iPhone and laptop are on the same WiFi. Use your laptop's local IP (e.g. `192.168.1.5:3000`) as the URL.
-
----
-
-### Data Flow Summary
-
-```
-iPhone tap
-  → Shortcut reads UID
-    → POST /nfc-auth (Node.js)
-      → keccak256(uid) = privateKey
-        → ethers.Wallet(privateKey).signMessage(votePayload)
-          → { address, signature } returned to frontend
-            → contract.voteWithNFC(proposalId, support, signature)
-              → ecrecover() verifies signer on-chain
-                → vote stored in mapping
-                  → UI polls and updates live
-```
-
----
-
-### Environment & Tools Checklist
-
-| Tool | Purpose | Where to get |
-|---|---|---|
-| Hardhat | compile + deploy Solidity | `npm i hardhat` |
-| Alchemy | Sepolia RPC URL | alchemy.com free tier |
-| Ethers.js v6 | wallet, signing, contract calls | `npm i ethers` |
-| Express | backend server | `npm i express` |
-| Vite + React | frontend | `npm create vite@latest` |
-| MetaMask | admin wallet + Sepolia ETH | already have it |
-| Sepolia faucet | test ETH for deployment | sepoliafaucet.com |
-
----
-
+### 3. The Pitch!
+Now, open `http://localhost:3001` on the laptop. Click **+ Add Proposal**, create a project, and vote for it. When the screen says "Waiting for tap...", tap the Metro Card to your iPhone. The iPhone will ping the Ubuntu laptop over Wi-Fi, execute the secure Ethereum transaction, and visually confirm it on the big screen instantly! 🏆
