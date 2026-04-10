@@ -52,18 +52,22 @@
                 </div>
                 <div class="browse-stats">
                     <div class="idle-stat">
-                        <span class="idle-stat-value" id="activeProposalCount">3</span>
+                        <span class="idle-stat-value" id="activeProposalCount">0</span>
                         <span class="idle-stat-label">Active Proposals</span>
                     </div>
                     <div class="idle-stat-divider"></div>
                     <div class="idle-stat">
-                        <span class="idle-stat-value" id="totalVoteCount">156</span>
+                        <span class="idle-stat-value" id="totalVoteCount">0</span>
                         <span class="idle-stat-label">Votes Cast</span>
                     </div>
                     <div class="idle-stat-divider"></div>
                     <div class="idle-stat">
                         <span class="idle-stat-value" id="blockCount">0</span>
                         <span class="idle-stat-label">Blocks</span>
+                    </div>
+                    <div class="idle-stat-divider"></div>
+                    <div class="idle-stat">
+                        <button class="add-proposal-btn" id="btnAddProposal" onclick="openAddProposalModal()">+ Add Proposal</button>
                     </div>
                 </div>
                 <div class="proposals-grid" id="proposalsGrid">
@@ -77,11 +81,10 @@
             <div class="await-container">
                 <!-- Selected proposal summary -->
                 <div class="selection-summary" id="selectionSummary">
-                    <div class="selection-badge" id="selectionVoteBadge">YES</div>
+                    <span class="selection-badge selection-badge-yes" id="selectionVoteBadge">SELECTED</span>
                     <div class="selection-info">
-                        <span class="selection-label">Your Selection</span>
-                        <h2 class="selection-title" id="selectionTitle">Park Bench Renovation</h2>
-                        <p class="selection-funds" id="selectionFunds">45,000 DAO Tokens</p>
+                        <h3 id="selectionTitle">Community Solar Panels</h3>
+                        <p id="selectionFunds" class="selection-funds">120,000 DAO Tokens</p>
                     </div>
                     <button class="selection-change" id="btnChangeSelection" onclick="goBackToBrowse()">✕ Change</button>
                 </div>
@@ -129,6 +132,10 @@
                             <span class="wallet-label">Wallet:</span>
                             <span class="wallet-address" id="voterWallet">0x7a3B...f29E</span>
                         </div>
+                        <div class="welcome-wallet" style="margin-top: 4px;">
+                            <span class="wallet-label">🪙 Token Balance:</span>
+                            <span class="wallet-address" id="voterTokenBalance" style="color: var(--accent-gold, #f0c040);">—</span>
+                        </div>
                     </div>
                     <div class="welcome-verified">
                         <span class="verified-icon">✓</span>
@@ -147,6 +154,46 @@
 
     </main>
 
+    <!-- ═══════ ADD PROPOSAL MODAL ═══════ -->
+    <div class="modal-overlay" id="addProposalModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📝 Add New Proposal</h2>
+                <button class="modal-close" onclick="closeAddProposalModal()">✕</button>
+            </div>
+            <form id="addProposalForm" onsubmit="submitNewProposal(event)">
+                <div class="form-group">
+                    <label for="propTitle">Project Title *</label>
+                    <input type="text" id="propTitle" placeholder="e.g. Community Garden" required>
+                </div>
+                <div class="form-group">
+                    <label for="propDesc">Description</label>
+                    <textarea id="propDesc" placeholder="Describe the project and its impact..." rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="propCategory">Category</label>
+                    <select id="propCategory">
+                        <option value="Infrastructure">Infrastructure</option>
+                        <option value="Energy">Energy</option>
+                        <option value="Digital">Digital</option>
+                        <option value="Education">Education</option>
+                        <option value="Health">Health</option>
+                        <option value="General">General</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="propFunds">Tokens Required *</label>
+                    <input type="number" id="propFunds" placeholder="e.g. 50000" min="1" required>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn-cancel" onclick="closeAddProposalModal()">Cancel</button>
+                    <button type="submit" class="btn-submit" id="btnSubmitProposal">🚀 Deploy to Blockchain</button>
+                </div>
+                <p class="form-status" id="formStatus"></p>
+            </form>
+        </div>
+    </div>
+
     <!-- ═══════ TRANSACTION FEED (Bottom ticker) ═══════ -->
     <footer id="txFeed">
         <div class="feed-label">⛓️ Live Blockchain Feed</div>
@@ -163,5 +210,6 @@
     <!-- Socket.io client loaded from server -->
     <script src="/socket.io/socket.io.js"></script>
     <script src="app.js"></script>
+
 </body>
 </html>

@@ -14,7 +14,7 @@
     let resetTimer = null;
 
     // Pending vote — set when user selects a proposal, cleared after NFC confirms
-    let pendingVote = null; // { proposalId, proposalTitle, vote, fundsRequested }
+    let pendingVote = null; // { proposalId, proposalTitle, fundsRequested }
 
     // ── DOM REFS ──
     const stateBrowse = document.getElementById('stateBrowse');
@@ -31,6 +31,7 @@
     const voterName = document.getElementById('voterName');
     const voterWard = document.getElementById('voterWard');
     const voterWallet = document.getElementById('voterWallet');
+    const voterTokenBalance = document.getElementById('voterTokenBalance');
 
     const confirmDetail = document.getElementById('confirmDetail');
     const confirmTxHash = document.getElementById('confirmTxHash');
@@ -69,6 +70,14 @@
         }
     });
 
+    // ── PROPOSALS UPDATED (new proposal added) ──
+    socket.on('proposals-updated', (data) => {
+        console.log('📝 Proposals updated from blockchain:', data);
+        proposals = data;
+        renderProposals();
+        updateBrowseStats();
+    });
+
     // ── NFC CARD SCANNED ──
     // This is now the CONFIRMATION step — it fires the pending vote
     socket.on('card-scanned', (data) => {
@@ -90,7 +99,7 @@
         addTransactionToFeed(data.transaction);
 
         // Now submit the pending vote
-        submitVote(voter.cardId, pendingVote.proposalId, pendingVote.vote);
+        submitVote(voter.cardId, pendingVote.proposalId);
     });
 
     // ── VOTE RECORDED (from server after successful vote) ──
@@ -103,6 +112,9 @@
         const idx = proposals.findIndex(p => p.id === data.proposal.id);
         if (idx !== -1) proposals[idx] = data.proposal;
 
+        renderProposals();
+        updateBrowseStats();
+
         // Add to transaction feed
         addTransactionToFeed(data.transaction);
 
@@ -111,10 +123,12 @@
         voterName.textContent = `${data.voter.name}`;
         voterWard.textContent = data.voter.ward;
         voterWallet.textContent = data.voter.wallet;
+        if (data.voter.tokenBalance !== undefined) {
+            voterTokenBalance.textContent = data.voter.tokenBalance.toLocaleString() + ' Tokens';
+        }
 
         // Show confirmation
-        const voteText = data.vote.toUpperCase();
-        confirmDetail.textContent = `Voted ${voteText} on "${data.proposal.title}"`;
+        confirmDetail.textContent = `Successfully supported "${data.proposal.title}"`;
         confirmTxHash.textContent = data.transaction.hash;
 
         // Clear pending vote
@@ -134,16 +148,6 @@
                 switchState('BROWSE');
             }
         }, 1000);
-    });
-
-    // ── FUND ALLOCATED ──
-    socket.on('fund-allocated', (data) => {
-        console.log('💰 Fund allocated:', data);
-        addTransactionToFeed(data.transaction);
-        if (data.treasury) {
-            const remaining = data.treasury.totalFunds - data.treasury.allocated;
-            treasuryAmount.textContent = remaining.toLocaleString();
-        }
     });
 
     // ── STATE MACHINE ──
@@ -172,13 +176,14 @@
         console.log(`🔄 State → ${newState}`);
     }
 
-    // ── RENDER PROPOSALS (always visible in BROWSE state) ──
+    // ── RENDER PROPOSALS ──
     function renderProposals() {
         proposalsGrid.innerHTML = '';
 
+        const totalVotesGlobally = proposals.reduce((sum, p) => sum + (p.votes || 0), 0);
+
         proposals.forEach((proposal) => {
-            const totalVotes = proposal.votesYes + proposal.votesNo;
-            const yesPercent = totalVotes > 0 ? Math.round((proposal.votesYes / totalVotes) * 100) : 0;
+            const percent = totalVotesGlobally > 0 ? Math.round((proposal.votes / totalVotesGlobally) * 100) : 0;
 
             const card = document.createElement('div');
             card.className = 'proposal-card';
@@ -191,20 +196,19 @@
                 </div>
                 <p class="proposal-desc">${proposal.description}</p>
                 <div class="proposal-funds">
-                    Funds Requested: <span class="proposal-funds-amount">${proposal.fundsRequested.toLocaleString()} DAO Tokens</span>
+                    Tokens Required: <span class="proposal-funds-amount">${proposal.fundsRequested.toLocaleString()} DAO Tokens</span>
                 </div>
                 <div class="vote-bar-container">
                     <div class="vote-bar-labels">
-                        <span class="vote-yes-label">👍 Yes: ${proposal.votesYes}</span>
-                        <span class="vote-no-label">👎 No: ${proposal.votesNo}</span>
+                        <span class="vote-yes-label" style="color: var(--text-primary)">🗳️ Votes: ${proposal.votes}</span>
+                        <span class="vote-no-label" style="color: rgba(255,255,255,0.5);">${percent}% of total</span>
                     </div>
                     <div class="vote-bar">
-                        <div class="vote-bar-fill" style="width: ${yesPercent}%"></div>
+                        <div class="vote-bar-fill" style="width: ${percent}%; background: var(--accent-blue);"></div>
                     </div>
                 </div>
-                <div class="vote-buttons">
-                    <button class="vote-btn vote-btn-yes" id="selectYes-${proposal.id}" onclick="selectVote(${proposal.id}, 'yes')">👍 Vote Yes</button>
-                    <button class="vote-btn vote-btn-no" id="selectNo-${proposal.id}" onclick="selectVote(${proposal.id}, 'no')">👎 Vote No</button>
+                <div class="vote-buttons" style="display: flex; justify-content: center;">
+                    <button class="vote-btn vote-btn-yes" style="flex: 1;" id="selectVote-${proposal.id}" onclick="selectVote(${proposal.id})">🗳️ Support Project</button>
                 </div>
             `;
 
@@ -212,29 +216,24 @@
         });
     }
 
-    // ── SELECT VOTE (user picks a proposal — moves to AWAIT_TAP) ──
-    window.selectVote = function (proposalId, vote) {
+    // ── SELECT VOTE ──
+    window.selectVote = function (proposalId) {
         const proposal = proposals.find(p => p.id === proposalId);
         if (!proposal) return;
 
-        // Store the pending vote
         pendingVote = {
             proposalId: proposal.id,
             proposalTitle: proposal.title,
-            vote: vote,
             fundsRequested: proposal.fundsRequested,
         };
 
-        // Update the selection summary UI
-        selectionVoteBadge.textContent = vote.toUpperCase();
-        selectionVoteBadge.className = 'selection-badge ' + (vote === 'yes' ? 'selection-badge-yes' : 'selection-badge-no');
+        selectionVoteBadge.textContent = "SELECTED";
+        selectionVoteBadge.className = 'selection-badge selection-badge-yes';
         selectionTitle.textContent = proposal.title;
         selectionFunds.textContent = `${proposal.fundsRequested.toLocaleString()} DAO Tokens`;
 
-        // Switch to awaiting NFC tap
         switchState('AWAIT_TAP');
 
-        // Auto-reset back to browse after 60 seconds if no tap
         clearResetTimer();
         resetTimer = setTimeout(() => {
             if (state === 'AWAIT_TAP') {
@@ -251,20 +250,19 @@
         switchState('BROWSE');
     };
 
-    // ── SUBMIT VOTE (called after NFC tap confirms identity) ──
-    async function submitVote(cardId, proposalId, vote) {
+    // ── SUBMIT VOTE ──
+    async function submitVote(cardId, proposalId) {
         try {
             const response = await fetch('/vote', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cardId, proposalId, vote }),
+                body: JSON.stringify({ cardId, proposalId }),
             });
 
             const result = await response.json();
 
             if (!response.ok) {
                 console.error('Vote failed:', result.error);
-                // Show error on the tap screen, don't bounce back
                 const tapTitle = document.querySelector('.tap-title');
                 if (tapTitle) {
                     tapTitle.textContent = '⚠️ ' + (result.error || 'Vote failed');
@@ -277,7 +275,6 @@
                     }, 3000);
                 }
             }
-            // Socket 'vote-recorded' event will handle the success flow
         } catch (err) {
             console.error('Network error:', err);
             const tapTitle = document.querySelector('.tap-title');
@@ -293,6 +290,57 @@
             }
         }
     }
+
+    // ── ADD PROPOSAL MODAL ──
+    window.openAddProposalModal = function () {
+        document.getElementById('addProposalModal').style.display = 'flex';
+    };
+
+    window.closeAddProposalModal = function () {
+        document.getElementById('addProposalModal').style.display = 'none';
+        document.getElementById('addProposalForm').reset();
+        document.getElementById('formStatus').textContent = '';
+    };
+
+    window.submitNewProposal = async function (e) {
+        e.preventDefault();
+        const title = document.getElementById('propTitle').value.trim();
+        const description = document.getElementById('propDesc').value.trim();
+        const category = document.getElementById('propCategory').value;
+        const fundsRequested = parseInt(document.getElementById('propFunds').value, 10);
+
+        const statusEl = document.getElementById('formStatus');
+        const submitBtn = document.getElementById('btnSubmitProposal');
+
+        statusEl.textContent = '⏳ Deploying to blockchain...';
+        statusEl.style.color = 'var(--accent-blue)';
+        submitBtn.disabled = true;
+
+        try {
+            const response = await fetch('/proposals', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title, description, category, fundsRequested }),
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                statusEl.textContent = '✅ Proposal deployed to blockchain!';
+                statusEl.style.color = 'var(--accent-green)';
+                setTimeout(() => {
+                    closeAddProposalModal();
+                }, 1500);
+            } else {
+                statusEl.textContent = '❌ ' + (result.error || 'Failed');
+                statusEl.style.color = 'var(--accent-red)';
+            }
+        } catch (err) {
+            statusEl.textContent = '❌ Network error';
+            statusEl.style.color = 'var(--accent-red)';
+        }
+        submitBtn.disabled = false;
+    };
 
     // ── TRANSACTION FEED ──
     function addTransactionToFeed(tx) {
@@ -312,7 +360,6 @@
 
         feedScroll.prepend(item);
 
-        // Keep max 30 items
         while (feedScroll.children.length > 30) {
             feedScroll.removeChild(feedScroll.lastChild);
         }
@@ -338,7 +385,7 @@
     // ── UI HELPERS ──
     function updateBrowseStats() {
         const activeCount = proposals.filter(p => p.status === 'active').length;
-        const totalVotes = proposals.reduce((sum, p) => sum + p.votesYes + p.votesNo, 0);
+        const totalVotes = proposals.reduce((sum, p) => sum + (p.votes || 0), 0);
 
         activeProposalCount.textContent = activeCount;
         totalVoteCount.textContent = totalVotes;
