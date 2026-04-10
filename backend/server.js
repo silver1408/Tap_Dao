@@ -5,6 +5,10 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const { ethers } = require("ethers");
+const {
+  summarizeProposalProblem,
+  OLLAMA_MODEL,
+} = require("./services/proposalSummaryService");
 
 const app = express();
 app.use(cors());
@@ -72,21 +76,21 @@ const initializedCards = new Set();
 // ─────────────────────────────────────────────
 const voters = {
   Metro_Card_001: {
-    name: "Grandma Patel",
+    name: "Vaibhav Gupta",
     avatar: "👵",
     privateKey:
       "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
     ward: "Sector 7, Green Park Colony",
   },
   Metro_Card_002: {
-    name: "Uncle Sharma",
+    name: "OG Pratyush Mehra",
     avatar: "👴",
     privateKey:
       "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
     ward: "Sector 12, Riverside",
   },
   Metro_Card_003: {
-    name: "Auntie Mehra",
+    name: "Suryansh Mishra",
     avatar: "👩",
     privateKey:
       "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
@@ -256,6 +260,42 @@ app.post("/proposals", async (req, res) => {
     console.error("❌ Failed to create proposal:", e.reason || e.message);
     return sendEncrypted(res, 500, {
       error: e.reason || "Failed to create proposal",
+    });
+  }
+});
+
+app.post("/proposals/summarize-problem", async (req, res) => {
+  const data = readEncryptedBody(req);
+  if (!data) {
+    return sendEncrypted(res, 400, {
+      error: "Invalid encrypted payload",
+    });
+  }
+
+  const title = typeof data.title === "string" ? data.title.trim() : "";
+  const description =
+    typeof data.description === "string" ? data.description.trim() : "";
+
+  if (!title) {
+    return sendEncrypted(res, 400, {
+      error: "Proposal title is required",
+    });
+  }
+
+  try {
+    const summary = await summarizeProposalProblem({
+      title,
+      description,
+    });
+
+    return sendEncrypted(res, 200, {
+      summary,
+      model: OLLAMA_MODEL,
+    });
+  } catch (error) {
+    console.error("❌ Summary generation failed:", error.message);
+    return sendEncrypted(res, 502, {
+      error: "Could not generate proposal summary",
     });
   }
 });

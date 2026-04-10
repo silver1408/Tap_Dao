@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
 import { decrypt, encrypt } from "./lib/crypto";
+import ProposalPreviewModal from "./components/ProposalPreviewModal";
+import { requestProposalProblemSummary } from "./services/proposalSummaryService";
 
 const API_BASE = (
   import.meta.env.VITE_API_URL || "http://localhost:3001"
@@ -25,6 +27,10 @@ function App() {
   const [currentVoter, setCurrentVoter] = useState(null);
   const [toast, setToast] = useState("");
   const [creating, setCreating] = useState(false);
+  const [previewProposal, setPreviewProposal] = useState(null);
+  const [summaryByProposalId, setSummaryByProposalId] = useState({});
+  const [summaryLoadingProposalId, setSummaryLoadingProposalId] =
+    useState(null);
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -191,6 +197,59 @@ function App() {
     }
   };
 
+  const summarizeProposalProblem = useCallback(
+    async (proposal, options = {}) => {
+      if (!proposal?.id) return;
+
+      const forceRefresh = Boolean(options.forceRefresh);
+      const cachedSummary = summaryByProposalId[proposal.id]?.summary;
+      if (cachedSummary && !forceRefresh) {
+        return;
+      }
+
+      setSummaryLoadingProposalId(proposal.id);
+
+      setSummaryByProposalId((prev) => ({
+        ...prev,
+        [proposal.id]: {
+          ...(prev[proposal.id] || {}),
+          error: "",
+        },
+      }));
+
+      try {
+        const response = await requestProposalProblemSummary({
+          apiPost,
+          proposal,
+        });
+
+        setSummaryByProposalId((prev) => ({
+          ...prev,
+          [proposal.id]: {
+            summary: response.summary,
+            model: response.model,
+            error: "",
+          },
+        }));
+      } catch (error) {
+        setSummaryByProposalId((prev) => ({
+          ...prev,
+          [proposal.id]: {
+            ...(prev[proposal.id] || {}),
+            error:
+              error.message ||
+              "Summary could not be generated right now. Please try again.",
+          },
+        }));
+      } finally {
+        setSummaryLoadingProposalId((current) =>
+          current === proposal.id ? null : current,
+        );
+      }
+    },
+    [apiPost, summaryByProposalId],
+  );
+
   useEffect(() => {
     fetchContractInfo();
     fetchProposals();
@@ -335,7 +394,19 @@ function App() {
           {loading ? <p>Loading proposals...</p> : null}
           <div className="proposal-list">
             {proposals.map((proposal) => (
-              <article key={proposal.id} className="proposal-item">
+              <article
+                key={proposal.id}
+                className="proposal-item clickable"
+                onClick={() => setPreviewProposal(proposal)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setPreviewProposal(proposal);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
                 <div>
                   <h3>{proposal.title}</h3>
                   <p>{proposal.description || "No description provided."}</p>
@@ -352,7 +423,10 @@ function App() {
                       ? "secondary-btn active"
                       : "secondary-btn"
                   }
-                  onClick={() => setPendingProposal(proposal)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setPendingProposal(proposal);
+                  }}
                 >
                   {pendingProposal?.id === proposal.id
                     ? "Awaiting Tap..."
@@ -441,6 +515,20 @@ function App() {
           </div>
         </section>
       </main>
+
+      <ProposalPreviewModal
+        isOpen={Boolean(previewProposal)}
+        proposal={previewProposal}
+        onClose={() => setPreviewProposal(null)}
+        onSummarize={() => summarizeProposalProblem(previewProposal)}
+        onRefreshSummary={() =>
+          summarizeProposalProblem(previewProposal, { forceRefresh: true })
+        }
+        summaryState={
+          previewProposal ? summaryByProposalId[previewProposal.id] : null
+        }
+        isLoading={summaryLoadingProposalId === previewProposal?.id}
+      />
 
       {toast ? <div className="toast">{toast}</div> : null}
 
