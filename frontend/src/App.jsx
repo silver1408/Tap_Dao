@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
+import { decrypt, encrypt } from "./lib/crypto";
 
 const API_BASE = (
   import.meta.env.VITE_API_URL || "http://localhost:3001"
@@ -58,63 +59,86 @@ function App() {
 
   const toApiPath = useCallback((path) => `${API_BASE}${path}`, []);
 
+  const decodeApiPayload = useCallback((data) => {
+    if (data && typeof data === "object" && typeof data.payload === "string") {
+      const decrypted = decrypt(data.payload);
+      if (!decrypted) {
+        throw new Error("Unable to decrypt server payload");
+      }
+      return JSON.parse(decrypted);
+    }
+    return data;
+  }, []);
+
+  const apiGet = useCallback(
+    async (path, fallbackMessage) => {
+      const response = await fetch(toApiPath(path));
+      const raw = await response.json();
+      const data = decodeApiPayload(raw);
+      if (!response.ok) {
+        throw new Error(data?.error || fallbackMessage);
+      }
+      return data;
+    },
+    [decodeApiPayload, toApiPath],
+  );
+
+  const apiPost = useCallback(
+    async (path, body, fallbackMessage) => {
+      const encryptedPayload = encrypt(JSON.stringify(body));
+      const response = await fetch(toApiPath(path), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload: encryptedPayload }),
+      });
+      const raw = await response.json();
+      const data = decodeApiPayload(raw);
+      if (!response.ok) {
+        throw new Error(data?.error || fallbackMessage);
+      }
+      return data;
+    },
+    [decodeApiPayload, toApiPath],
+  );
+
   const fetchProposals = useCallback(async () => {
     try {
-      const response = await fetch(toApiPath("/proposals"));
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to load proposals");
-      }
+      const data = await apiGet("/proposals", "Failed to load proposals");
       setProposals(data);
     } catch (error) {
       notify(`API error: ${error.message}`);
     } finally {
       setLoading(false);
     }
-  }, [notify, toApiPath]);
+  }, [apiGet, notify]);
 
   const fetchContractInfo = useCallback(async () => {
     try {
-      const response = await fetch(toApiPath("/contract"));
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to load contract details");
-      }
+      const data = await apiGet("/contract", "Failed to load contract details");
       setContractInfo(data);
     } catch (error) {
       notify(`Contract bootstrap error: ${error.message}`);
     }
-  }, [notify, toApiPath]);
+  }, [apiGet, notify]);
 
   const castVote = useCallback(
     async (cardId, proposalId, proposalTitle) => {
       try {
-        const response = await fetch(toApiPath("/vote"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardId, proposalId }),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || "Vote request failed");
-        }
+        await apiPost("/vote", { cardId, proposalId }, "Vote request failed");
         notify(`Vote transaction submitted for ${proposalTitle}`);
       } catch (error) {
         notify(`Vote failed: ${error.message}`);
       }
     },
-    [notify, toApiPath],
+    [apiPost, notify],
   );
 
   const simulateTap = async () => {
     try {
-      const response = await fetch(
-        toApiPath(`/scan?cardId=${encodeURIComponent(selectedCardId)}`),
+      const data = await apiGet(
+        `/scan?cardId=${encodeURIComponent(selectedCardId)}`,
+        "Card scan failed",
       );
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Card scan failed");
-      }
       notify(`Card verified for ${data.voter}`);
     } catch (error) {
       notify(`Scan failed: ${error.message}`);
@@ -124,19 +148,16 @@ function App() {
   const simulateTapForCard = useCallback(
     async (cardId) => {
       try {
-        const response = await fetch(
-          toApiPath(`/scan?cardId=${encodeURIComponent(cardId)}`),
+        const data = await apiGet(
+          `/scan?cardId=${encodeURIComponent(cardId)}`,
+          "Card scan failed",
         );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || "Card scan failed");
-        }
         notify(`Card verified for ${data.voter}`);
       } catch (error) {
         notify(`Scan failed: ${error.message}`);
       }
     },
-    [notify, toApiPath],
+    [apiGet, notify],
   );
 
   const createProposal = async (event) => {
@@ -147,21 +168,15 @@ function App() {
     }
 
     setCreating(true);
+    const payload = {
+      title: form.title.trim(),
+      description: form.description.trim(),
+      category: form.category,
+      fundsRequested: Number(form.fundsRequested),
+    };
+
     try {
-      const response = await fetch(toApiPath("/proposals"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: form.title.trim(),
-          description: form.description.trim(),
-          category: form.category,
-          fundsRequested: Number(form.fundsRequested),
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Create proposal failed");
-      }
+      await apiPost("/proposals", payload, "Create proposal failed");
       setForm({
         title: "",
         description: "",

@@ -10,7 +10,8 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.0",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "crypto-js": "^4.1.1"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
