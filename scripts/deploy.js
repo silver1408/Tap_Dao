@@ -1,4 +1,6 @@
 const hre = require("hardhat");
+const fs = require('fs');
+const path = require('path');
 
 async function main() {
     console.log("Deploying OffGridDAO...");
@@ -11,8 +13,13 @@ async function main() {
     const contractAddress = await dao.getAddress();
     console.log(`\n🎉 OffGridDAO deployed to: ${contractAddress}\n`);
     
-    const fs = require('fs');
-    fs.writeFileSync('address.json', JSON.stringify({ contractAddress }));
+    const addressFilePath = process.env.ADDRESS_FILE || path.join(process.cwd(), 'address.json');
+    fs.mkdirSync(path.dirname(addressFilePath), { recursive: true });
+    fs.writeFileSync(addressFilePath, JSON.stringify({ contractAddress }, null, 2));
+
+    if (addressFilePath !== path.join(process.cwd(), 'address.json')) {
+        fs.writeFileSync(path.join(process.cwd(), 'address.json'), JSON.stringify({ contractAddress }, null, 2));
+    }
 
     // Allocate tokens to all known voter wallets
     console.log("Allocating initial tokens to voters...");

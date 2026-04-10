@@ -14,17 +14,21 @@ app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
+const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
+const addressFilePath = process.env.ADDRESS_FILE || path.join(__dirname, 'address.json');
+const port = Number(process.env.PORT || 3001);
+
 // ─────────────────────────────────────────────
 //  WEB3 BLOCKCHAIN SETUP (Hardhat localhost)
 // ─────────────────────────────────────────────
 
-const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+const provider = new ethers.JsonRpcProvider(rpcUrl);
 
 // Read ABI and deployed Address
 const contractJSON = require('./artifacts/contracts/OffGridDAO.sol/OffGridDAO.json');
 let contractAddress = "";
 try {
-    contractAddress = JSON.parse(fs.readFileSync('./address.json')).contractAddress;
+    contractAddress = JSON.parse(fs.readFileSync(addressFilePath)).contractAddress;
 } catch (e) {
     console.warn("⚠️ Warning: address.json not found. Run deployment script first.");
 }
@@ -289,12 +293,11 @@ io.on('connection', async (socket) => {
 // ─────────────────────────────────────────────
 //  START SERVER
 // ─────────────────────────────────────────────
-const PORT = 3001;
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(port, '0.0.0.0', () => {
     console.log('');
     console.log('═══════════════════════════════════════════════');
     console.log('   🏛️  OFF-GRID DAO — ACTUAL WEB3 INSTANCE');
     console.log('═══════════════════════════════════════════════');
-    console.log(`   Dashboard:  http://localhost:${PORT}`);
+    console.log(`   Dashboard:  http://localhost:${port}`);
     console.log('═══════════════════════════════════════════════');
 });

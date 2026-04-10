@@ -1,0 +1,46 @@
+services:
+  hardhat:
+    build: .
+    command: npx hardhat node --hostname 0.0.0.0
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "const http=require('http');const req=http.request({hostname:'127.0.0.1',port:8545,method:'POST',headers:{'Content-Type':'application/json'}},res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.write('{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}');req.end();"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  deploy:
+    build: .
+    depends_on:
+      hardhat:
+        condition: service_healthy
+    environment:
+      RPC_URL: http://hardhat:8545
+      ADDRESS_FILE: /app/runtime/address.json
+    volumes:
+      - runtime-data:/app/runtime
+    command: sh -c "npx hardhat run scripts/deploy.js --network localhost"
+
+  app:
+    build: .
+    depends_on:
+      hardhat:
+        condition: service_healthy
+      deploy:
+        condition: service_completed_successfully
+    environment:
+      PORT: 3001
+      RPC_URL: http://hardhat:8545
+      ADDRESS_FILE: /app/runtime/address.json
+    volumes:
+      - runtime-data:/app/runtime
+    ports:
+      - "3001:3001"
+    command: node server.js
+
+volumes:
+  runtime-data:

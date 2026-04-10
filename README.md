@@ -47,6 +47,23 @@ Your dashboard is now live! Open your browser to **http://localhost:3001**
 
 ---
 
+## 🐳 Run Everything with Docker
+
+You can start the blockchain, deploy the contract, and launch the web server with one command:
+
+```bash
+docker compose up -d --build
+```
+
+This starts three services:
+* `hardhat` runs the local Ethereum node on `8545`
+* `deploy` compiles and deploys `OffGridDAO`, then writes the contract address to shared runtime storage
+* `app` starts the Express server on `3001` after deployment is complete
+
+Open **http://localhost:3001** after the stack finishes starting.
+
+---
+
 ## 📱 Setting up the iPhone NFC Shortcut
 
 To use real physical NFC cards (like Metro cards) to trigger votes, you need to configure an iPhone automation. Because the phone is wireless, it cannot connect to `localhost`. It needs the **exact Local Wi-Fi IP Address** of the Ubuntu laptop running the server.
@@ -72,3 +89,4 @@ Open the **Shortcuts App** on iPhone:
 
 ### 3. The Pitch!
 Now, open `http://localhost:3001` on the laptop. Click **+ Add Proposal**, create a project, and vote for it. When the screen says "Waiting for tap...", tap the Metro Card to your iPhone. The iPhone will ping the Ubuntu laptop over Wi-Fi, execute the secure Ethereum transaction, and visually confirm it on the big screen instantly! 🏆
+ http://192.168.1.15:3001/scan?cardId=Metro_Card_001
