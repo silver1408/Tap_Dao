@@ -1,0 +1,77 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "C:\\Users\\Ishaan\\Desktop\\off_grid\\contracts\\OffGridDAO.sol": {
+      "lastModificationDate": 1775824093291,
+      "contentHash": "0bc37a44537e48eaa6f6542806cef932",
+      "sourceName": "contracts/OffGridDAO.sol",
+      "solcConfig": {
+        "version": "0.8.24",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.24"
+      ],
+      "artifacts": [
+        "OffGridDAO"
+      ]
+    },
+    "C:\\Users\\Ishaan\\Desktop\\off_grid\\contracts\\SimpleWallet.sol": {
+      "lastModificationDate": 1775815945392,
+      "contentHash": "1e9a270ea40eaf76ebf96284cb796170",
+      "sourceName": "contracts/SimpleWallet.sol",
+      "solcConfig": {
+        "version": "0.8.24",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.0"
+      ],
+      "artifacts": [
+        "SimpleWallet"
+      ]
+    }
+  }
+}
