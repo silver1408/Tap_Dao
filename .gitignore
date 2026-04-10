@@ -1,11 +1,2 @@
 node_modules/
-package-lock.json
 .DS_Store
-artifacts/
-cache/
-typechain-types/
-address.json
-install.bat
-install-hh2.bat
-install-hh-deps.bat
-compile.bat
