@@ -28,6 +28,10 @@ function App() {
   const [toast, setToast] = useState("");
   const [creating, setCreating] = useState(false);
   const [previewProposal, setPreviewProposal] = useState(null);
+  const [pinModalOpen, setPinModalOpen] = useState(false);
+  const [pinValue, setPinValue] = useState("");
+  const [scannedPayload, setScannedPayload] = useState(null);
+  const [pinError, setPinError] = useState("");
   const [summaryByProposalId, setSummaryByProposalId] = useState({});
   const [summaryLoadingProposalId, setSummaryLoadingProposalId] =
     useState(null);
@@ -128,16 +132,41 @@ function App() {
   }, [apiGet, notify]);
 
   const castVote = useCallback(
-    async (cardId, proposalId, proposalTitle) => {
+    async (encryptedPayload, proposalId, proposalTitle, pin) => {
       try {
-        await apiPost("/vote", { cardId, proposalId }, "Vote request failed");
+        await apiPost("/vote", { encryptedPayload, proposalId, pin }, "Vote request failed");
         notify(`Vote transaction submitted for ${proposalTitle}`);
+        setPinModalOpen(false);
+        setPinValue("");
+        setPendingProposal(null);
+        setScannedPayload(null);
       } catch (error) {
-        notify(`Vote failed: ${error.message}`);
+        setPinError(`Vote failed: ${error.message}`);
       }
     },
     [apiPost, notify],
   );
+
+  const handlePinSubmit = (e) => {
+    e.preventDefault();
+    if (pinValue.length < 4) {
+      setPinError("PIN must be at least 4 digits");
+      return;
+    }
+    const pending = pendingProposalRef.current;
+    if (pending?.id && scannedPayload) {
+      setPinError("");
+      castVote(scannedPayload, pending.id, pending.title, pinValue);
+    }
+  };
+
+  const handlePinCancel = () => {
+    setPinModalOpen(false);
+    setPinValue("");
+    setScannedPayload(null);
+    setPendingProposal(null);
+    setPinError("");
+  };
 
   const simulateTap = async () => {
     try {
@@ -280,9 +309,9 @@ function App() {
       }
 
       const pending = pendingProposalRef.current;
-      if (pending?.id) {
-        setPendingProposal(null);
-        castVote(payload.voter.cardId, pending.id, pending.title);
+      if (pending?.id && payload.voter?.encryptedPayload) {
+        setScannedPayload(payload.voter.encryptedPayload);
+        setPinModalOpen(true);
       }
     });
 
@@ -529,6 +558,33 @@ function App() {
         }
         isLoading={summaryLoadingProposalId === previewProposal?.id}
       />
+
+      {pinModalOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content pin-modal">
+            <h2>Vault Locked</h2>
+            <p className="pin-description">
+              Please enter your 4-digit PIN to decrypt your wallet and authorize this transaction.
+            </p>
+            <form onSubmit={handlePinSubmit} className="pin-form">
+              <input
+                type="password"
+                maxLength="4"
+                className="pin-input"
+                placeholder="****"
+                value={pinValue}
+                onChange={(e) => { setPinValue(e.target.value); setPinError(""); }}
+                autoFocus
+              />
+              {pinError && <p className="error-text" style={{color: 'var(--accent-red)'}}>{pinError}</p>}
+              <div className="modal-actions" style={{display: 'flex', gap: '8px', marginTop: '16px'}}>
+                <button type="button" className="secondary-btn" onClick={handlePinCancel} style={{flex: 1}}>Cancel</button>
+                <button type="submit" className="primary-btn" style={{flex: 1}}>Unlock & Vote</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {toast ? <div className="toast">{toast}</div> : null}
 

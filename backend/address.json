@@ -1,6 +1,6 @@
 {
   "contractName": "OffGridDAO",
-  "contractAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "contractAddress": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
   "abi": [
     {
       "anonymous": false,
@@ -319,5 +319,5 @@
       "type": "function"
     }
   ],
-  "deployedAt": "2026-04-10T22:56:36.215Z"
+  "deployedAt": "2026-04-10T23:30:26.232Z"
 }

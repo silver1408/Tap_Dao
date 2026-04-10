@@ -5,6 +5,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const { ethers } = require("ethers");
+const crypto = require("crypto");
 const {
   summarizeProposalProblem,
   OLLAMA_MODEL,
@@ -74,6 +75,29 @@ const initializedCards = new Set();
 // ─────────────────────────────────────────────
 //  VOTER REGISTRY (Mapped to Hardhat Private Keys)
 // ─────────────────────────────────────────────
+function encryptPayload(text, pin) {
+  const key = crypto.pbkdf2Sync(pin, "salt", 100000, 32, "sha256");
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  let encrypted = cipher.update(text, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  const authTag = cipher.getAuthTag().toString("hex");
+  return { iv: iv.toString("hex"), encrypted, authTag };
+}
+
+function decryptPayload(encryptedObj, pin) {
+  const key = crypto.pbkdf2Sync(pin, "salt", 100000, 32, "sha256");
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    key,
+    Buffer.from(encryptedObj.iv, "hex"),
+  );
+  decipher.setAuthTag(Buffer.from(encryptedObj.authTag, "hex"));
+  let decrypted = decipher.update(encryptedObj.encrypted, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
 const voters = {
   Metro_Card_001: {
     name: "Vaibhav Gupta",
@@ -98,19 +122,27 @@ const voters = {
   },
 };
 
+for (const cardId in voters) {
+  const wallet = new ethers.Wallet(voters[cardId].privateKey);
+  voters[cardId].wallet = wallet.address;
+  voters[cardId].encryptedPayload = encryptPayload(voters[cardId].privateKey, "1234");
+  delete voters[cardId].privateKey; // Wiped from memory
+}
+
+const fallbackWallet = new ethers.Wallet(
+  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+);
+const fallbackPayload = encryptPayload(fallbackWallet.privateKey, "1234");
+
 function getVoter(cardId) {
   if (voters[cardId]) {
-    const wallet = new ethers.Wallet(voters[cardId].privateKey);
-    return { cardId, ...voters[cardId], wallet: wallet.address };
+    return { cardId, ...voters[cardId] };
   }
-  const fallbackWallet = new ethers.Wallet(
-    "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
-  );
   return {
     cardId,
     name: "Community Member",
     avatar: "🧑",
-    privateKey: fallbackWallet.privateKey,
+    encryptedPayload: fallbackPayload,
     wallet: fallbackWallet.address,
     ward: "Local Resident",
   };
@@ -340,7 +372,7 @@ app.get("/scan", async (req, res) => {
   };
   transactionFeed.push(txEntry);
 
-  // Broadcast to dashboard with token balance
+  // Broadcast to dashboard with token balance and encrypted payload
   io.emit("card-scanned", {
     voter: {
       name: voter.name,
@@ -349,6 +381,7 @@ app.get("/scan", async (req, res) => {
       ward: voter.ward,
       cardId: voter.cardId,
       tokenBalance,
+      encryptedPayload: voter.encryptedPayload,
     },
     transaction: txEntry,
   });
@@ -378,7 +411,7 @@ app.get("/balance", async (req, res) => {
   }
 });
 
-// Cast a real Blockchain Vote (Single Choice)
+// Cast a real Blockchain Vote (Stateless PIN Verification)
 app.post("/vote", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const data = readEncryptedBody(req);
@@ -387,20 +420,27 @@ app.post("/vote", async (req, res) => {
       error: "Invalid encrypted payload",
     });
   }
-  const { cardId, proposalId } = data;
+  const { encryptedPayload, proposalId, pin } = data;
 
-  if (!cardId || !proposalId) {
+  if (!encryptedPayload || !proposalId || !pin) {
     return sendEncrypted(res, 400, {
-      error: "Missing cardId or proposalId",
+      error: "Missing encryptedPayload, proposalId, or pin",
     });
   }
 
-  const voter = getVoter(cardId);
-  const signer = new ethers.Wallet(voter.privateKey, provider);
+  let decryptedPrivateKey;
+  try {
+    decryptedPrivateKey = decryptPayload(encryptedPayload, pin);
+  } catch (e) {
+    console.error("❌ Decryption failed: Wrong PIN or tampered payload!");
+    return sendEncrypted(res, 401, { error: "Incorrect PIN. Vault failed to open." });
+  }
+
+  const signer = new ethers.Wallet(decryptedPrivateKey, provider);
   const connectedContract = daoContract.connect(signer);
 
   try {
-    console.log(`⏳ Signing and sending TX to Blockchain for ${voter.name}...`);
+    console.log(`⏳ Signing and sending TX to Blockchain using decrypted key...`);
     const tx = await connectedContract.vote(proposalId);
     console.log(`⛓️  TX Sent! Hash: ${tx.hash}`);
     const receipt = await tx.wait();
