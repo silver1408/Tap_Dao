@@ -4,6 +4,8 @@ import "./App.css";
 import { decrypt, encrypt } from "./lib/crypto";
 import ProposalPreviewModal from "./components/ProposalPreviewModal";
 import { requestProposalProblemSummary } from "./services/proposalSummaryService";
+import Cropper from "react-easy-crop";
+import getCroppedImg from "./lib/cropUtils";
 
 const API_BASE = (
   import.meta.env.VITE_API_URL || "http://localhost:3001"
@@ -32,6 +34,11 @@ function App() {
   const [pinValue, setPinValue] = useState("");
   const [scannedPayload, setScannedPayload] = useState(null);
   const [pinError, setPinError] = useState("");
+  const [pinAction, setPinAction] = useState("vote"); // "vote" or "balance"
+  const [cropImageSrc, setCropImageSrc] = useState(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
   const [summaryByProposalId, setSummaryByProposalId] = useState({});
   const [summaryLoadingProposalId, setSummaryLoadingProposalId] =
     useState(null);
@@ -49,8 +56,10 @@ function App() {
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiError, setAiError] = useState("");
 
+  const aiErrorRef = useRef(null); // Just spacing alignment
   const pendingProposalRef = useRef(null);
   const toastTimerRef = useRef(null);
+  const voterTimeoutRef = useRef(null);
 
   useEffect(() => {
     pendingProposalRef.current = pendingProposal;
@@ -154,10 +163,39 @@ function App() {
     [apiPost, notify],
   );
 
+  const checkBalance = useCallback(
+    async (encryptedPayload, pin) => {
+      try {
+        const data = await apiPost("/verify-pin", { encryptedPayload, pin }, "Balance check failed");
+        setCurrentVoter((prev) => ({ ...prev, tokenBalance: data.tokenBalance }));
+        setPinModalOpen(false);
+        setPinValue("");
+        setPinAction("vote");
+        setScannedPayload(null);
+        
+        // Auto-hide the balance after 7 seconds for security
+        setTimeout(() => {
+          setCurrentVoter((prev) => {
+            if (!prev) return prev;
+            return { ...prev, tokenBalance: null };
+          });
+        }, 7000);
+      } catch (error) {
+        setPinError(`Verification failed: ${error.message}`);
+      }
+    },
+    [apiPost],
+  );
+
   const handlePinSubmit = (e) => {
     e.preventDefault();
     if (pinValue.length < 4) {
       setPinError("PIN must be at least 4 digits");
+      return;
+    }
+    if (pinAction === "balance" && scannedPayload) {
+      setPinError("");
+      checkBalance(scannedPayload, pinValue);
       return;
     }
     const pending = pendingProposalRef.current;
@@ -367,6 +405,16 @@ function App() {
         setTransactions((prev) => [payload.transaction, ...prev].slice(0, 20));
       }
 
+      if (voterTimeoutRef.current) {
+        clearTimeout(voterTimeoutRef.current);
+      }
+      
+      // Auto-logout user after 10 seconds to hide identifying information and secure session
+      voterTimeoutRef.current = setTimeout(() => {
+        setCurrentVoter(null);
+        setPinModalOpen(false); // Hide the vault modal if they abandon it
+      }, 10000);
+
       const pending = pendingProposalRef.current;
       if (pending?.id && payload.voter?.encryptedPayload) {
         setScannedPayload(payload.voter.encryptedPayload);
@@ -392,6 +440,9 @@ function App() {
     return () => {
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
+      }
+      if (voterTimeoutRef.current) {
+        clearTimeout(voterTimeoutRef.current);
       }
       socket.disconnect();
     };
@@ -474,6 +525,25 @@ function App() {
             <small>
               {currentVoter?.wallet || "Wallet will appear after scan"}
             </small>
+            {currentVoter ? (
+              <div style={{ marginTop: "1rem" }}>
+                {currentVoter.tokenBalance == null ? (
+                  <button 
+                    type="button" 
+                    className="secondary-btn" 
+                    onClick={() => { 
+                      setPinAction("balance"); 
+                      setScannedPayload(currentVoter.encryptedPayload); 
+                      setPinModalOpen(true); 
+                    }}
+                  >
+                    Check Balance
+                  </button>
+                ) : (
+                  <strong>Balance: {currentVoter.tokenBalance} tokens</strong>
+                )}
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -642,14 +712,25 @@ function App() {
                   type="file"
                   accept="image/*"
                   onChange={(event) => {
-                    if (event.target.files?.[0]) {
-                      setForm((prev) => ({ ...prev, imageFile: event.target.files[0] }));
+                    const file = event.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.addEventListener("load", () =>
+                        setCropImageSrc(reader.result)
+                      );
+                      reader.readAsDataURL(file);
                     }
                   }}
                   className="file-input"
+                  id="proposal-image-input"
                 />
               </label>
-              <button type="submit" className="primary-btn" disabled={creating}>
+              {form.imageFile && (
+                <p style={{ marginTop: "0.5rem", fontSize: "0.9rem", color: "var(--itom-light-gray)" }}>
+                  ✅ Cropped image ready: {form.imageFile.name}
+                </p>
+              )}
+              <button type="submit" className="primary-btn" disabled={creating} style={{ marginTop: "1rem" }}>
                 {creating ? "Submitting..." : "Deploy Proposal"}
               </button>
             </form>
@@ -671,6 +752,54 @@ function App() {
         </section>
       </main>
 
+      {cropImageSrc && (
+        <div className="modal-overlay">
+          <div className="modal-content crop-modal" style={{ width: "90%", maxWidth: "600px" }}>
+            <h2>Crop Image</h2>
+            <div className="cropper-container" style={{ position: "relative", width: "100%", height: "400px", background: "#333", marginTop: "1rem", borderRadius: "8px", overflow: "hidden" }}>
+              <Cropper
+                image={cropImageSrc}
+                crop={crop}
+                zoom={zoom}
+                aspect={16 / 9}
+                onCropChange={setCrop}
+                onCropComplete={(croppedArea, croppedAreaPixels) => setCroppedAreaPixels(croppedAreaPixels)}
+                onZoomChange={setZoom}
+              />
+            </div>
+            <div className="modal-actions" style={{ marginTop: "1.5rem" }}>
+              <button 
+                type="button" 
+                className="secondary-btn"
+                onClick={() => {
+                  setCropImageSrc(null);
+                  document.getElementById('proposal-image-input').value = '';
+                }}
+              >
+                Cancel
+              </button>
+              <button 
+                type="button" 
+                className="primary-btn"
+                onClick={async () => {
+                  try {
+                    const croppedBlob = await getCroppedImg(cropImageSrc, croppedAreaPixels, 0);
+                    const croppedFile = new File([croppedBlob], "cropped.jpg", { type: "image/jpeg" });
+                    setForm((prev) => ({ ...prev, imageFile: croppedFile }));
+                    setCropImageSrc(null);
+                    notify("Image cropped securely");
+                  } catch (e) {
+                    notify("Failed to crop image");
+                  }
+                }}
+              >
+                Apply Crop
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ProposalPreviewModal
         isOpen={Boolean(previewProposal)}
         proposal={previewProposal}
@@ -690,7 +819,9 @@ function App() {
           <div className="modal-content pin-modal">
             <h2>Vault Locked</h2>
             <p className="pin-description">
-              Please enter your 4-digit PIN to decrypt your wallet and authorize this transaction.
+              {pinAction === "balance"
+                ? "Please enter your 4-digit PIN to decrypt your wallet and check your balance securely."
+                : "Please enter your 4-digit PIN to decrypt your wallet and authorize this transaction."}
             </p>
             <form onSubmit={handlePinSubmit} className="pin-form">
               <input
@@ -708,7 +839,7 @@ function App() {
                   Cancel
                 </button>
                 <button type="submit" className="primary-btn">
-                  Unlock & Vote
+                  {pinAction === "balance" ? "Unlock Balance" : "Unlock & Vote"}
                 </button>
               </div>
             </form>

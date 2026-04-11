@@ -415,13 +415,13 @@ app.get("/scan", async (req, res) => {
   // Allocate tokens on first scan if not already done
   let tokenBalance = 0;
   try {
-    if (!initializedCards.has(cardId) && adminContract) {
+    const alreadyInitialized = await daoContract.isInitialized(voter.wallet);
+    if (!alreadyInitialized && adminContract) {
       console.log(
         `🪙 First scan for ${cardId} — allocating 1000 tokens on-chain...`,
       );
       const allocTx = await adminContract.allocateTokens(voter.wallet, 1000);
       await allocTx.wait();
-      initializedCards.add(cardId);
     }
     // Read balance from blockchain
     tokenBalance = Number(await daoContract.getTokenBalance(voter.wallet));
@@ -443,7 +443,7 @@ app.get("/scan", async (req, res) => {
   };
   transactionFeed.push(txEntry);
 
-  // Broadcast to dashboard with token balance and encrypted payload
+  // Broadcast to dashboard with token balance hidden initially
   io.emit("card-scanned", {
     voter: {
       name: voter.name,
@@ -451,7 +451,7 @@ app.get("/scan", async (req, res) => {
       wallet: voter.wallet,
       ward: voter.ward,
       cardId: voter.cardId,
-      tokenBalance,
+      tokenBalance: null, // Hidden until PIN verified
       encryptedPayload: voter.encryptedPayload,
     },
     transaction: txEntry,
@@ -460,7 +460,7 @@ app.get("/scan", async (req, res) => {
   return sendEncrypted(res, 200, {
     success: true,
     voter: voter.name,
-    tokenBalance,
+    tokenBalance: null, // Hidden
   });
 });
 
@@ -479,6 +479,41 @@ app.get("/balance", async (req, res) => {
     });
   } catch (e) {
     return sendEncrypted(res, 500, { error: "Could not read balance" });
+  }
+});
+
+// Verify PIN to securely return balance
+app.post("/verify-pin", async (req, res) => {
+  if (!ensureContractReady(res)) return;
+  const data = readEncryptedBody(req);
+  if (!data) {
+    return sendEncrypted(res, 400, { error: "Invalid encrypted payload" });
+  }
+  const { encryptedPayload, pin } = data;
+
+  if (!encryptedPayload || !pin) {
+    return sendEncrypted(res, 400, { error: "Missing encryptedPayload or pin" });
+  }
+
+  let decryptedPrivateKey;
+  try {
+    decryptedPrivateKey = decryptPayload(encryptedPayload, pin);
+  } catch (e) {
+    console.error("❌ Balance check failed: Wrong PIN!");
+    return sendEncrypted(res, 401, { error: "Incorrect PIN. Vault failed to open." });
+  }
+
+  // If we decrypted it successfully, we know this is the actual voter.
+  const signer = new ethers.Wallet(decryptedPrivateKey, provider);
+  
+  try {
+    const balance = Number(await daoContract.getTokenBalance(signer.address));
+    return sendEncrypted(res, 200, {
+      success: true,
+      tokenBalance: balance,
+    });
+  } catch (e) {
+    return sendEncrypted(res, 500, { error: "Could not read balance from chain" });
   }
 });
 
@@ -519,6 +554,35 @@ app.post("/vote", async (req, res) => {
       `⛏️  TX Mined! BlockNumber: ${receipt.blockNumber}, Gas Used: ${receipt.gasUsed.toString()}`,
     );
 
+    // Explicitly fetch and emit to guarantee dashboard updates (bypasses Hardhat event listener bugs)
+    const p = await daoContract.getProposal(proposalId);
+    const proposalObj = {
+      id: Number(p.id),
+      title: p.title,
+      description: p.description,
+      category: p.category,
+      fundsRequested: Number(p.fundsRequested),
+      votes: Number(p.votes),
+      imageUrl: proposalImages[Number(p.id)] || "",
+      status: p.active ? "active" : "inactive",
+    };
+
+    const txEntry = {
+      id: transactionFeed.length + 1,
+      type: "VOTE_CAST",
+      hash: tx.hash,
+      timestamp: new Date().toISOString(),
+    };
+    transactionFeed.push(txEntry);
+
+    const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
+
+    io.emit("vote-recorded", {
+      voter: currentVoter ? { ...currentVoter, tokenBalance: updatedBalance } : { name: "Voter", wallet: signer.address, tokenBalance: updatedBalance },
+      proposal: proposalObj,
+      transaction: txEntry,
+    });
+
     return sendEncrypted(res, 200, {
       success: true,
       transactionHash: tx.hash,
@@ -532,46 +596,8 @@ app.post("/vote", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-//  BLOCKCHAIN EVENT LISTENERS
+//  BLOCKCHAIN EVENT LISTENERS (Removed: using inline emit for reliability)
 // ─────────────────────────────────────────────
-if (daoContract) {
-  daoContract.on(
-    "VoteCast",
-    async (voterAddr, proposalId, newVoteCount, eventPayload) => {
-      console.log(
-        `\n🎉 EVENT RECEIVED: Real Vote Cast on Blockchain by ${voterAddr} for proposal ${proposalId}`,
-      );
-
-      const p = await daoContract.getProposal(proposalId);
-      const proposalObj = {
-        id: Number(p.id),
-        title: p.title,
-        description: p.description,
-        category: p.category,
-        fundsRequested: Number(p.fundsRequested),
-        votes: Number(p.votes),
-        status: p.active ? "active" : "inactive",
-      };
-
-      const txHash = eventPayload.log.transactionHash;
-
-      const txEntry = {
-        id: transactionFeed.length + 1,
-        type: "VOTE_CAST",
-        hash: txHash,
-        timestamp: new Date().toISOString(),
-      };
-      transactionFeed.push(txEntry);
-
-      io.emit("vote-recorded", {
-        voter: currentVoter || { name: "Voter", wallet: voterAddr },
-        proposal: proposalObj,
-        transaction: txEntry,
-      });
-    },
-  );
-}
-
 // ─────────────────────────────────────────────
 //  SOCKET.IO
 // ─────────────────────────────────────────────
