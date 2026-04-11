@@ -4,8 +4,8 @@ function ProposalPreviewModal({
   isOpen,
   proposal,
   onClose,
-  onSummarize,
-  onRefreshSummary,
+  // onSummarize,
+  // onRefreshSummary,
   summaryState,
   isLoading,
 }) {
@@ -70,7 +70,7 @@ function ProposalPreviewModal({
           <p>{proposal.description || "No detailed description provided."}</p>
         </div>
 
-        <div className="modal-summary-actions">
+        {/* <div className="modal-summary-actions">
           <button
             type="button"
             className="primary-btn"
@@ -89,7 +89,7 @@ function ProposalPreviewModal({
               Refresh
             </button>
           ) : null}
-        </div>
+        </div> */}
 
         {isLoading ? (
           <div className="summary-loading" role="status" aria-live="polite">
