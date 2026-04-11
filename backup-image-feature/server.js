@@ -1,17 +1,15 @@
-require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const multer = require("multer");
 const { ethers } = require("ethers");
 const crypto = require("crypto");
 const {
   summarizeProposalProblem,
-  generateProposalFromDescription,
   OLLAMA_MODEL,
-  FEATHERLESS_MODEL,
 } = require("./services/proposalSummaryService");
 
 const app = express();
@@ -20,24 +18,20 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Image upload setup
-const multer = require("multer");
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
 }
+
 const storage = multer.diskStorage({
-  destination: function (_req, _file, cb) {
+  destination: function (req, file, cb) {
     cb(null, uploadDir);
   },
-  filename: function (_req, file, cb) {
+  filename: function (req, file, cb) {
     cb(null, Date.now() + path.extname(file.originalname));
-  },
+  }
 });
-const upload = multer({ storage });
-
-// In-memory map for proposal images (contract doesn't store imageUrl)
-const proposalImages = {};
+const upload = multer({ storage: storage });
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
@@ -187,7 +181,7 @@ async function readAllProposals() {
         fundsRequested: Number(p.fundsRequested),
         votes: Number(p.votes),
         status: p.active ? "active" : "inactive",
-        imageUrl: proposalImages[Number(p.id)] || "",
+        imageUrl: p.imageUrl,
       });
     }
   } catch (e) {
@@ -252,12 +246,11 @@ function readEncryptedBody(req) {
 //  API ROUTES
 // ─────────────────────────────────────────────
 
-// Image upload endpoint
 app.post("/upload", upload.single("image"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No image file provided." });
   }
-  const fileUrl = `/uploads/${req.file.filename}`;
+  const fileUrl = `http://localhost:3001/uploads/${req.file.filename}`;
   return res.json({ imageUrl: fileUrl });
 });
 
@@ -309,15 +302,10 @@ app.post("/proposals", async (req, res) => {
       description || "",
       category || "General",
       fundsRequested,
+      imageUrl || ""
     );
     await tx.wait();
     console.log(`✅ Proposal created on-chain! TX: ${tx.hash}`);
-
-    // Store image URL server-side (contract doesn't support it)
-    const newCount = Number(await daoContract.proposalCount());
-    if (imageUrl) {
-      proposalImages[newCount] = imageUrl;
-    }
 
     // Re-read all proposals and broadcast to all dashboards
     const allProposals = await readAllProposals();
@@ -367,38 +355,6 @@ app.post("/proposals/summarize-problem", async (req, res) => {
     console.error("❌ Summary generation failed:", error.message);
     return sendEncrypted(res, 502, {
       error: "Could not generate proposal summary",
-    });
-  }
-});
-
-// AI Proposal Generation (Featherless AI)
-app.post("/proposals/generate", async (req, res) => {
-  const data = readEncryptedBody(req);
-  if (!data) {
-    return sendEncrypted(res, 400, {
-      error: "Invalid encrypted payload",
-    });
-  }
-
-  const userText =
-    typeof data.text === "string" ? data.text.trim() : "";
-
-  if (!userText) {
-    return sendEncrypted(res, 400, {
-      error: "Please describe your proposal idea",
-    });
-  }
-
-  try {
-    console.log(`🤖 Generating proposal from: "${userText.slice(0, 80)}..."`);
-    const generated = await generateProposalFromDescription(userText);
-    console.log(`✅ AI generated proposal: "${generated.title}"`);
-
-    return sendEncrypted(res, 200, generated);
-  } catch (error) {
-    console.error("❌ Proposal generation failed:", error.message);
-    return sendEncrypted(res, 502, {
-      error: error.message || "Could not generate proposal",
     });
   }
 });
@@ -551,6 +507,7 @@ if (daoContract) {
         fundsRequested: Number(p.fundsRequested),
         votes: Number(p.votes),
         status: p.active ? "active" : "inactive",
+        imageUrl: p.imageUrl,
       };
 
       const txHash = eventPayload.log.transactionHash;

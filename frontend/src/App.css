@@ -338,6 +338,85 @@ select:focus {
   gap: 0.65rem;
 }
 
+/* ── Manual / AI Tab Toggle ── */
+.create-mode-tabs {
+  display: flex;
+  gap: 0.45rem;
+  margin-bottom: 0.6rem;
+}
+
+.mode-tab {
+  flex: 1;
+  border: 2px solid var(--itom-charcoal);
+  border-radius: var(--sketch-radius);
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  font-family: var(--font-hand);
+  font-size: 1.05rem;
+  font-weight: 700;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--itom-charcoal);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease,
+    color 0.15s ease;
+  box-shadow: 2px 2px 0 rgba(26, 26, 26, 0.08);
+}
+
+.mode-tab:hover {
+  transform: translateY(-1px);
+  box-shadow: 3px 3px 0 rgba(26, 26, 26, 0.12);
+}
+
+.mode-tab.active {
+  background: var(--itom-charcoal);
+  color: var(--itom-white);
+  box-shadow: 3px 3px 0 rgba(26, 26, 26, 0.2);
+}
+
+/* ── AI Mode ── */
+.ai-mode {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.ai-hint {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  font-style: italic;
+}
+
+.ai-textarea {
+  width: 100%;
+  min-height: 6.5rem;
+  border: 2px solid var(--field-border);
+  background: var(--field-bg);
+  color: var(--ink-main);
+  border-radius: var(--sketch-radius);
+  padding: 0.75rem;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  resize: vertical;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.ai-textarea:focus {
+  outline: none;
+  border-color: var(--itom-charcoal);
+  box-shadow: 3px 3px 0 rgba(26, 26, 26, 0.12);
+}
+
+.ai-textarea::placeholder {
+  color: var(--itom-muted-light);
+  font-style: italic;
+}
+
+.ai-generate-btn {
+  font-size: 1.1rem;
+}
+
 .feed-list {
   display: grid;
   gap: 0.5rem;

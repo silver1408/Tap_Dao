@@ -1,0 +1,40 @@
+:root {
+  --paper: #f9f7ef;
+  --ink-main: #1a1d31;
+  --ink-muted: #5f667f;
+  --brand-teal: #0e7c86;
+  --brand-copper: #bf5f2f;
+  --panel-bg: rgba(255, 255, 255, 0.76);
+  --panel-border: rgba(26, 29, 49, 0.14);
+  --field-bg: rgba(255, 255, 255, 0.9);
+  --field-border: rgba(26, 29, 49, 0.22);
+  --focus-ring: rgba(14, 124, 134, 0.35);
+  --font-main: 'Space Grotesk', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-main);
+  color: var(--ink-main);
+  background:
+    radial-gradient(circle at 12% 16%, rgba(14, 124, 134, 0.2), transparent 34%),
+    radial-gradient(circle at 88% 20%, rgba(191, 95, 47, 0.18), transparent 38%),
+    linear-gradient(165deg, #f0ecdf, var(--paper));
+  padding: 1rem;
+}
+
+#root {
+  max-width: 1200px;
+  margin: 0 auto;
+}

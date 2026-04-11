@@ -43,12 +43,6 @@ function App() {
     imageFile: null,
   });
 
-  // AI Proposal Generation state
-  const [createMode, setCreateMode] = useState("manual"); // "manual" | "ai"
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiError, setAiError] = useState("");
-
   const pendingProposalRef = useRef(null);
   const toastTimerRef = useRef(null);
 
@@ -252,36 +246,6 @@ function App() {
       notify(`Create failed: ${error.message}`);
     } finally {
       setCreating(false);
-    }
-  };
-
-  const generateProposal = async () => {
-    if (!aiPrompt.trim()) {
-      setAiError("Please describe your proposal idea first");
-      return;
-    }
-    setAiGenerating(true);
-    setAiError("");
-    try {
-      const generated = await apiPost(
-        "/proposals/generate",
-        { text: aiPrompt.trim() },
-        "AI generation failed",
-      );
-      // Pre-fill the manual form with AI-generated fields
-      setForm((prev) => ({
-        ...prev,
-        title: generated.title || prev.title,
-        description: generated.description || prev.description,
-        category: generated.category || prev.category,
-      }));
-      // Switch to manual mode so user can review and set token amount
-      setCreateMode("manual");
-      notify("AI filled your proposal — review and set token amount");
-    } catch (error) {
-      setAiError(error.message || "Failed to generate proposal");
-    } finally {
-      setAiGenerating(false);
     }
   };
 
@@ -532,128 +496,79 @@ function App() {
 
         <section className="panel create">
           <h2>Create Proposal</h2>
-
-          <div className="create-mode-tabs">
-            <button
-              type="button"
-              className={`mode-tab ${createMode === "manual" ? "active" : ""}`}
-              onClick={() => setCreateMode("manual")}
-            >
-              ✏️ Manual
-            </button>
-            <button
-              type="button"
-              className={`mode-tab ${createMode === "ai" ? "active" : ""}`}
-              onClick={() => setCreateMode("ai")}
-            >
-              ✨ AI Assist
-            </button>
-          </div>
-
-          {createMode === "ai" ? (
-            <div className="ai-mode">
-              <p className="ai-hint">
-                Describe your proposal idea in plain language. The AI will
-                structure it into a formal proposal for you to review.
-              </p>
-              <textarea
-                className="ai-textarea"
-                rows="5"
-                value={aiPrompt}
-                onChange={(e) => { setAiPrompt(e.target.value); setAiError(""); }}
-                placeholder='e.g. "We need better street lights in sector 7, the main road is completely dark after 8pm and people feel unsafe walking..."'
+          <form onSubmit={createProposal} className="create-form">
+            <label>
+              Title
+              <input
+                type="text"
+                value={form.title}
+                onChange={(event) =>
+                  setForm((prev) => ({ ...prev, title: event.target.value }))
+                }
+                placeholder="Community solar lighting"
               />
-              {aiError ? <p className="error-text">{aiError}</p> : null}
-              <button
-                type="button"
-                className="primary-btn ai-generate-btn"
-                onClick={generateProposal}
-                disabled={aiGenerating}
+            </label>
+            <label>
+              Description
+              <textarea
+                rows="3"
+                value={form.description}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    description: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Category
+              <select
+                value={form.category}
+                onChange={(event) =>
+                  setForm((prev) => ({ ...prev, category: event.target.value }))
+                }
               >
-                {aiGenerating ? "Generating..." : "✨ Generate Proposal"}
-              </button>
-              {aiGenerating ? (
-                <div className="summary-loading" role="status">
-                  <span className="spinner" aria-hidden="true" />
-                  <p>AI is structuring your proposal...</p>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <form onSubmit={createProposal} className="create-form">
-              <label>
-                Title
-                <input
-                  type="text"
-                  value={form.title}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, title: event.target.value }))
+                <option value="General">General</option>
+                <option value="Infrastructure">Infrastructure</option>
+                <option value="Energy">Energy</option>
+                <option value="Digital">Digital</option>
+                <option value="Education">Education</option>
+                <option value="Health">Health</option>
+              </select>
+            </label>
+            <label>
+              Tokens Requested
+              <input
+                type="number"
+                min="1"
+                value={form.fundsRequested}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    fundsRequested: event.target.value,
+                  }))
+                }
+                placeholder="50000"
+              />
+            </label>
+            <label>
+              Hero Image (Optional)
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  if (event.target.files?.[0]) {
+                    setForm((prev) => ({ ...prev, imageFile: event.target.files[0] }));
                   }
-                  placeholder="Community solar lighting"
-                />
-              </label>
-              <label>
-                Description
-                <textarea
-                  rows="3"
-                  value={form.description}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      description: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Category
-                <select
-                  value={form.category}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, category: event.target.value }))
-                  }
-                >
-                  <option value="General">General</option>
-                  <option value="Infrastructure">Infrastructure</option>
-                  <option value="Energy">Energy</option>
-                  <option value="Digital">Digital</option>
-                  <option value="Education">Education</option>
-                  <option value="Health">Health</option>
-                </select>
-              </label>
-              <label>
-                Tokens Requested
-                <input
-                  type="number"
-                  min="1"
-                  value={form.fundsRequested}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      fundsRequested: event.target.value,
-                    }))
-                  }
-                  placeholder="50000"
-                />
-              </label>
-              <label>
-                Image (Optional)
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => {
-                    if (event.target.files?.[0]) {
-                      setForm((prev) => ({ ...prev, imageFile: event.target.files[0] }));
-                    }
-                  }}
-                  className="file-input"
-                />
-              </label>
-              <button type="submit" className="primary-btn" disabled={creating}>
-                {creating ? "Submitting..." : "Deploy Proposal"}
-              </button>
-            </form>
-          )}
+                }}
+                className="file-input"
+              />
+            </label>
+            <button type="submit" className="primary-btn" disabled={creating}>
+              {creating ? "Submitting..." : "Deploy Proposal"}
+            </button>
+          </form>
         </section>
 
         <section className="panel feed">
@@ -702,14 +617,10 @@ function App() {
                 onChange={(e) => { setPinValue(e.target.value); setPinError(""); }}
                 autoFocus
               />
-              {pinError ? <p className="error-text">{pinError}</p> : null}
-              <div className="modal-actions">
-                <button type="button" className="secondary-btn" onClick={handlePinCancel}>
-                  Cancel
-                </button>
-                <button type="submit" className="primary-btn">
-                  Unlock & Vote
-                </button>
+              {pinError && <p className="error-text" style={{color: 'var(--accent-red)'}}>{pinError}</p>}
+              <div className="modal-actions" style={{display: 'flex', gap: '8px', marginTop: '16px'}}>
+                <button type="button" className="secondary-btn" onClick={handlePinCancel} style={{flex: 1}}>Cancel</button>
+                <button type="submit" className="primary-btn" style={{flex: 1}}>Unlock & Vote</button>
               </div>
             </form>
           </div>

@@ -9,10 +9,12 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "crypto-js": "^4.1.1",
+    "dotenv": "^17.4.1",
     "express": "^4.21.0",
+    "multer": "^2.1.1",
     "ollama": "^0.5.16",
-    "socket.io": "^4.7.5",
-    "crypto-js": "^4.1.1"
+    "socket.io": "^4.7.5"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
