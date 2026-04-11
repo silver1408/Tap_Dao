@@ -2,8 +2,8 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "C:\\Users\\Ishaan\\Desktop\\test_case\\Tap_Dao\\backend\\contracts\\OffGridDAO.sol": {
-      "lastModificationDate": 1775867656395,
-      "contentHash": "e8adad85bf226c1e3e9d8338170298a6",
+      "lastModificationDate": 1775881961206,
+      "contentHash": "0d83884c7acfb3c07b32f516b97cdebe",
       "sourceName": "contracts/OffGridDAO.sol",
       "solcConfig": {
         "version": "0.8.24",

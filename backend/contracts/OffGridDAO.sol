@@ -22,6 +22,9 @@ contract OffGridDAO {
     // Token balances per wallet address
     mapping(address => uint256) public tokenBalances;
 
+    // Track if a voter has received their initial free allocation
+    mapping(address => bool) public isInitialized;
+
     // To iterate easily, we keep a counter of total proposals
     uint256 public proposalCount;
 
@@ -51,7 +54,9 @@ contract OffGridDAO {
 
     // Allocate tokens to a voter (called by server on first card scan)
     function allocateTokens(address _voter, uint256 _amount) public {
+        require(!isInitialized[_voter], "Voter already received initial tokens");
         tokenBalances[_voter] += _amount;
+        isInitialized[_voter] = true;
         emit TokensAllocated(_voter, _amount);
     }
 
@@ -60,6 +65,10 @@ contract OffGridDAO {
         require(_proposalId > 0 && _proposalId <= proposalCount, "Proposal does not exist");
         require(proposals[_proposalId].active, "Proposal is no longer active");
         require(!hasVotedGlobally[msg.sender], "You have already voted! Only one vote allowed overall.");
+        require(tokenBalances[msg.sender] >= 100, "Insufficient tokens to vote (costs 100)");
+
+        // Deduct tokens
+        tokenBalances[msg.sender] -= 100;
 
         proposals[_proposalId].votes++;
         hasVotedGlobally[msg.sender] = true;

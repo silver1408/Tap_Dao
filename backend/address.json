@@ -225,6 +225,25 @@
       "type": "function"
     },
     {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "name": "isInitialized",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
       "inputs": [],
       "name": "proposalCount",
       "outputs": [
@@ -319,5 +338,5 @@
       "type": "function"
     }
   ],
-  "deployedAt": "2026-04-11T02:15:40.371Z"
+  "deployedAt": "2026-04-11T05:25:37.212Z"
 }
