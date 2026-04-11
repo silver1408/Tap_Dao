@@ -40,6 +40,7 @@ function App() {
     description: "",
     category: "General",
     fundsRequested: "",
+    imageFile: null,
   });
 
   const pendingProposalRef = useRef(null);
@@ -203,11 +204,32 @@ function App() {
     }
 
     setCreating(true);
+
+    let imageUrl = "";
+    if (form.imageFile) {
+      try {
+        const formData = new FormData();
+        formData.append("image", form.imageFile);
+        
+        const uploadRes = await fetch(toApiPath("/upload"), {
+          method: "POST",
+          body: formData,
+        });
+        if (!uploadRes.ok) throw new Error("Image upload failed");
+        
+        const uploadData = await uploadRes.json();
+        imageUrl = uploadData.imageUrl || "";
+      } catch (e) {
+        notify(`Image upload warning: ${e.message}`);
+      }
+    }
+
     const payload = {
       title: form.title.trim(),
       description: form.description.trim(),
       category: form.category,
       fundsRequested: Number(form.fundsRequested),
+      imageUrl,
     };
 
     try {
@@ -217,6 +239,7 @@ function App() {
         description: "",
         category: "General",
         fundsRequested: "",
+        imageFile: null,
       });
       notify("Proposal created and broadcast to all clients");
     } catch (error) {
@@ -436,6 +459,11 @@ function App() {
                 role="button"
                 tabIndex={0}
               >
+                {proposal.imageUrl ? (
+                  <div className="proposal-thumbnail-wrapper">
+                    <img src={proposal.imageUrl} alt="" className="proposal-thumbnail" />
+                  </div>
+                ) : null}
                 <div>
                   <h3>{proposal.title}</h3>
                   <p>{proposal.description || "No description provided."}</p>
@@ -522,6 +550,19 @@ function App() {
                   }))
                 }
                 placeholder="50000"
+              />
+            </label>
+            <label>
+              Image (Optional)
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  if (event.target.files?.[0]) {
+                    setForm((prev) => ({ ...prev, imageFile: event.target.files[0] }));
+                  }
+                }}
+                className="file-input"
               />
             </label>
             <button type="submit" className="primary-btn" disabled={creating}>

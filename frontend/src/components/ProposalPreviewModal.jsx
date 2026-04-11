@@ -42,6 +42,12 @@ function ProposalPreviewModal({
         aria-modal="true"
         aria-labelledby="proposal-preview-title"
       >
+        {proposal.imageUrl ? (
+          <div className="modal-hero-wrapper">
+            <img src={proposal.imageUrl} alt="" className="modal-hero-image" />
+          </div>
+        ) : null}
+
         <header className="modal-header">
           <h3 id="proposal-preview-title">{proposal.title}</h3>
           <button

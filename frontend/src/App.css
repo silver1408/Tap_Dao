@@ -692,3 +692,50 @@ select:focus {
 .modal-actions .secondary-btn {
   flex: 1;
 }
+/* IMAGE UPLOAD & DISPLAY STYLES */
+.file-input {
+  width: 100%;
+  padding: 0.5rem;
+  border: 2px solid var(--field-border);
+  border-radius: var(--sketch-radius);
+  background: var(--field-bg);
+  color: var(--ink-main);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.file-input:focus {
+  border-color: var(--itom-charcoal);
+  outline: none;
+  box-shadow: 4px 4px 0 rgba(26, 26, 26, 0.12);
+}
+
+.proposal-thumbnail-wrapper {
+  overflow: hidden;
+  border-radius: 0.5rem;
+  margin-bottom: 0.4rem;
+  height: 140px;
+}
+
+.proposal-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 300ms ease;
+}
+
+.proposal-item.clickable:hover .proposal-thumbnail {
+  transform: scale(1.05);
+}
+
+.modal-hero-wrapper {
+  overflow: hidden;
+  border-radius: 0.5rem 0.5rem 0 0;
+  height: 200px;
+  margin-bottom: 1rem;
+}
+
+.modal-hero-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
