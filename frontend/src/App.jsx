@@ -551,52 +551,77 @@ function App() {
           <h2>Live Proposals</h2>
           {loading ? <p>Loading proposals...</p> : null}
           <div className="proposal-list">
-            {proposals.map((proposal) => (
-              <article
-                key={proposal.id}
-                className="proposal-item clickable"
-                onClick={() => setPreviewProposal(proposal)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setPreviewProposal(proposal);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                {proposal.imageUrl ? (
-                  <div className="proposal-thumbnail-wrapper">
-                    <img src={proposal.imageUrl} alt="" className="proposal-thumbnail" />
-                  </div>
-                ) : null}
-                <div>
-                  <h3>{proposal.title}</h3>
-                  <p>{proposal.description || "No description provided."}</p>
-                </div>
-                <div className="proposal-meta">
-                  <span>{proposal.category}</span>
-                  <span>{proposal.fundsRequested} tokens</span>
-                  <span>{proposal.votes} votes</span>
-                </div>
-                <button
-                  type="button"
-                  className={
-                    pendingProposal?.id === proposal.id
-                      ? "secondary-btn active"
-                      : "secondary-btn"
-                  }
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setPendingProposal(proposal);
+            {proposals.map((proposal) => {
+              const tokensReceived = (proposal.votes || 0) * 100;
+              const fundsReq = proposal.fundsRequested || 1;
+              const rawPercent = (tokensReceived / fundsReq) * 100;
+              const progressPercent = Math.min(rawPercent, 100).toFixed(1);
+
+              let barColor = "#10B981"; // Green for near-complete
+              if (rawPercent < 33) barColor = "#EF4444"; // Red for early
+              else if (rawPercent < 66) barColor = "#F59E0B"; // Yellow for halfway
+
+              return (
+                <article
+                  key={proposal.id}
+                  className="proposal-item clickable"
+                  style={{ position: "relative", overflow: "hidden", borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
+                  onClick={() => setPreviewProposal(proposal)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setPreviewProposal(proposal);
+                    }
                   }}
+                  role="button"
+                  tabIndex={0}
                 >
-                  {pendingProposal?.id === proposal.id
-                    ? "Awaiting Tap..."
-                    : "Select for Vote"}
-                </button>
-              </article>
-            ))}
+                  {proposal.imageUrl ? (
+                    <div className="proposal-thumbnail-wrapper">
+                      <img src={proposal.imageUrl} alt="" className="proposal-thumbnail" />
+                    </div>
+                  ) : null}
+                  <div>
+                    <h3>{proposal.title}</h3>
+                    <p>{proposal.description || "No description provided."}</p>
+                  </div>
+                  <div className="proposal-meta">
+                    <span>{proposal.category}</span>
+                    <span>{tokensReceived} / {proposal.fundsRequested} tokens</span>
+                    <span>{progressPercent}%</span>
+                  </div>
+                  <button
+                    type="button"
+                    className={
+                      pendingProposal?.id === proposal.id
+                        ? "secondary-btn active"
+                        : "secondary-btn"
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPendingProposal(proposal);
+                    }}
+                  >
+                    {pendingProposal?.id === proposal.id
+                      ? "Awaiting Tap..."
+                      : "Select for Vote"}
+                  </button>
+                  <div
+                    style={{
+                      position: "absolute",
+                      bottom: 0,
+                      left: 0,
+                      height: "6px",
+                      width: `${progressPercent}%`,
+                      backgroundColor: barColor,
+                      transition: "width 0.4s ease-out, background-color 0.4s ease",
+                      borderBottomRightRadius: progressPercent >= 100 ? "0" : "4px"
+                    }}
+                    title={`${progressPercent}% Funded`}
+                  />
+                </article>
+              );
+            })}
           </div>
         </section>
 
