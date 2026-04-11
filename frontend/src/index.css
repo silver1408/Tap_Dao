@@ -1,16 +1,30 @@
+/* Design tokens aligned with portfolio-itom (ITom) — paper corridor aesthetic */
 :root {
-  --paper: #f9f7ef;
-  --ink-main: #1a1d31;
-  --ink-muted: #5f667f;
-  --brand-teal: #0e7c86;
-  --brand-copper: #bf5f2f;
-  --panel-bg: rgba(255, 255, 255, 0.76);
-  --panel-border: rgba(26, 29, 49, 0.14);
-  --field-bg: rgba(255, 255, 255, 0.9);
-  --field-border: rgba(26, 29, 49, 0.22);
-  --focus-ring: rgba(14, 124, 134, 0.35);
-  --font-main: 'Space Grotesk', sans-serif;
-  --font-mono: 'IBM Plex Mono', monospace;
+  --itom-bg: #fafafa;
+  --itom-white: #ffffff;
+  --itom-ink: #0a0a0a;
+  --itom-charcoal: #1a1a1a;
+  --itom-muted: #666666;
+  --itom-muted-light: #888888;
+  --itom-paper-texture: url("/textures/paper-texture.webp");
+
+  --font-main: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-hand: "Caveat", cursive;
+  --font-display: "Gloria Hallelujah", cursive;
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+
+  --paper: #f9f9f9;
+  --ink-main: var(--itom-ink);
+  --ink-muted: var(--itom-muted);
+  --brand-teal: var(--itom-charcoal);
+  --brand-copper: var(--itom-charcoal);
+  --panel-bg: rgba(255, 255, 255, 0.82);
+  --panel-border: var(--itom-charcoal);
+  --field-bg: rgba(255, 255, 255, 0.95);
+  --field-border: var(--itom-charcoal);
+  --focus-ring: rgba(26, 26, 26, 0.25);
+  --accent-red: #b42318;
+  --sketch-radius: 2px 255px 3px 255px / 255px 5px 225px 3px;
 }
 
 * {
@@ -27,11 +41,17 @@ body,
 body {
   font-family: var(--font-main);
   color: var(--ink-main);
-  background:
-    radial-gradient(circle at 12% 16%, rgba(14, 124, 134, 0.2), transparent 34%),
-    radial-gradient(circle at 88% 20%, rgba(191, 95, 47, 0.18), transparent 38%),
-    linear-gradient(165deg, #f0ecdf, var(--paper));
+  background-color: var(--itom-bg);
+  background-image: linear-gradient(
+      rgba(250, 250, 250, 0.9),
+      rgba(250, 250, 250, 0.94)
+    ),
+    var(--itom-paper-texture);
+  background-size: auto, 480px 480px;
+  background-attachment: fixed;
   padding: 1rem;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {

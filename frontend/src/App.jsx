@@ -576,10 +576,14 @@ function App() {
                 onChange={(e) => { setPinValue(e.target.value); setPinError(""); }}
                 autoFocus
               />
-              {pinError && <p className="error-text" style={{color: 'var(--accent-red)'}}>{pinError}</p>}
-              <div className="modal-actions" style={{display: 'flex', gap: '8px', marginTop: '16px'}}>
-                <button type="button" className="secondary-btn" onClick={handlePinCancel} style={{flex: 1}}>Cancel</button>
-                <button type="submit" className="primary-btn" style={{flex: 1}}>Unlock & Vote</button>
+              {pinError ? <p className="error-text">{pinError}</p> : null}
+              <div className="modal-actions">
+                <button type="button" className="secondary-btn" onClick={handlePinCancel}>
+                  Cancel
+                </button>
+                <button type="submit" className="primary-btn">
+                  Unlock & Vote
+                </button>
               </div>
             </form>
           </div>
