@@ -2,84 +2,278 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
 import { decrypt, encrypt } from "./lib/crypto";
-import ProposalPreviewModal from "./components/ProposalPreviewModal";
-import { requestProposalProblemSummary } from "./services/proposalSummaryService";
-import Cropper from "react-easy-crop";
-import getCroppedImg from "./lib/cropUtils";
 
+// ─── API Base ───
 const API_BASE = (
-  import.meta.env.VITE_API_URL || "http://localhost:3001"
+  import.meta.env.VITE_API_URL || window.location.origin
 ).replace(/\/$/, "");
+
 const SOCKET_BASE = import.meta.env.VITE_SOCKET_URL || API_BASE || undefined;
 
-const CARD_OPTIONS = [
-  { id: "Metro_Card_001", label: "Metro Card 001 (Vaibhav Gupta)" },
-  { id: "Metro_Card_002", label: "Metro Card 002 (OG Pratyush Mehra)" },
-  { id: "Metro_Card_003", label: "Metro Card 003 (Suryansh Gupta)" },
-];
+// ─── RegisterModal Component ───
+function RegisterModal({ cardId, onRegister, onCancel, loading, error }) {
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [localError, setLocalError] = useState("");
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (pin.length < 4) {
+      setLocalError("PIN must be at least 4 digits");
+      return;
+    }
+    if (pin !== pinConfirm) {
+      setLocalError("PINs don't match");
+      return;
+    }
+    setLocalError("");
+    onRegister({ cardId, name: name.trim() || `Voter ${cardId.slice(-4)}`, pin });
+  };
+
+  return (
+    <div className="modal-overlay centered" onClick={onCancel}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <h2>Register Card</h2>
+        <p className="modal-subtitle">
+          This card isn't registered yet. Set your identity and a 4-digit PIN to secure your wallet.
+        </p>
+
+        <div className="card-id-display">
+          <p className="card-label">Card ID</p>
+          <p className="card-value">{cardId}</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="create-form">
+          <label>
+            Your Name
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Enter your name"
+              autoFocus
+            />
+          </label>
+          <label>
+            Set 4-Digit PIN
+            <input
+              type="password"
+              inputMode="numeric"
+              maxLength="6"
+              className="pin-input"
+              value={pin}
+              onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setLocalError(""); }}
+              placeholder="••••"
+            />
+          </label>
+          <label>
+            Confirm PIN
+            <input
+              type="password"
+              inputMode="numeric"
+              maxLength="6"
+              className="pin-input"
+              value={pinConfirm}
+              onChange={(e) => { setPinConfirm(e.target.value.replace(/\D/g, "")); setLocalError(""); }}
+              placeholder="••••"
+            />
+          </label>
+          {(localError || error) ? <p className="error-text">{localError || error}</p> : null}
+          <div className="modal-actions">
+            <button type="button" className="secondary-btn" onClick={onCancel}>Cancel</button>
+            <button type="submit" className="primary-btn" disabled={loading}>
+              {loading ? "Registering..." : "Register Card"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── PinModal Component ───
+function PinModal({ action, onSubmit, onCancel, error }) {
+  const [pin, setPin] = useState("");
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (pin.length < 4) return;
+    onSubmit(pin);
+  };
+
+  const titles = {
+    vote: "🔐 Authorize Vote",
+    balance: "🔐 Check Balance",
+    create: "🔐 Verify Identity",
+  };
+
+  const descriptions = {
+    vote: "Enter your 4-digit PIN to authorize this vote on the blockchain.",
+    balance: "Enter your PIN to decrypt your wallet and check your token balance.",
+    create: "Enter your PIN to verify your identity and create this proposal.",
+  };
+
+  const buttonLabels = {
+    vote: "Cast Vote",
+    balance: "Unlock Balance",
+    create: "Create Proposal",
+  };
+
+  return (
+    <div className="modal-overlay centered" onClick={onCancel}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <h2>{titles[action] || "🔐 Enter PIN"}</h2>
+        <p className="modal-subtitle">{descriptions[action] || ""}</p>
+        <form onSubmit={handleSubmit}>
+          <input
+            type="password"
+            inputMode="numeric"
+            maxLength="6"
+            className="pin-input"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
+            placeholder="••••"
+            autoFocus
+          />
+          {error ? <p className="error-text">{error}</p> : null}
+          <div className="modal-actions">
+            <button type="button" className="secondary-btn" onClick={onCancel}>Cancel</button>
+            <button type="submit" className="primary-btn" disabled={pin.length < 4}>
+              {buttonLabels[action] || "Submit"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── ProposalPreview Modal ───
+function ProposalPreview({ proposal, onClose, onVote, currentVoter }) {
+  if (!proposal) return null;
+
+  const tokensReceived = (proposal.votes || 0) * 100;
+  const percent = Math.min((tokensReceived / (proposal.fundsRequested || 1)) * 100, 100).toFixed(1);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        {proposal.imageUrl ? (
+          <div className="preview-hero">
+            <img src={proposal.imageUrl} alt="" />
+          </div>
+        ) : null}
+
+        <div className="preview-header">
+          <h3>{proposal.title}</h3>
+          <button type="button" className="modal-close" onClick={onClose}>×</button>
+        </div>
+
+        <div className="preview-meta">
+          <span>{proposal.category}</span>
+          <span>{tokensReceived} / {proposal.fundsRequested} tokens</span>
+          <span>{percent}% funded</span>
+          <span>{proposal.votes} votes</span>
+        </div>
+
+        <div className="preview-description">
+          <p>{proposal.description || "No detailed description provided."}</p>
+        </div>
+
+        {currentVoter ? (
+          <button
+            type="button"
+            className="primary-btn btn-block"
+            onClick={() => onVote(proposal)}
+          >
+            Vote for This Proposal
+          </button>
+        ) : (
+          <p className="error-text" style={{ textAlign: "center" }}>
+            Scan your card first to vote
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════
+//  MAIN APP
+// ═══════════════════════════════════════════════
 
 function App() {
+  // ── Connection ──
   const [connected, setConnected] = useState(false);
+  const [socketId, setSocketId] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [contractInfo, setContractInfo] = useState(null);
+
+  // ── Data ──
   const [proposals, setProposals] = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [selectedCardId, setSelectedCardId] = useState(CARD_OPTIONS[0].id);
-  const [pendingProposal, setPendingProposal] = useState(null);
+
+  // ── Identity ──
   const [currentVoter, setCurrentVoter] = useState(null);
+  const [manualCardId, setManualCardId] = useState("");
+
+  // ── UI State ──
+  const [activeTab, setActiveTab] = useState("vote");
+  const [intendedAction, setIntendedAction] = useState(null);
   const [toast, setToast] = useState("");
-  const [creating, setCreating] = useState(false);
   const [previewProposal, setPreviewProposal] = useState(null);
-  const [pinModalOpen, setPinModalOpen] = useState(false);
-  const [pinValue, setPinValue] = useState("");
-  const [scannedPayload, setScannedPayload] = useState(null);
+
+  const handleActionSelect = (action) => {
+    setIntendedAction(action);
+    if (action === "read") setActiveTab("vote");
+    if (action === "write") setActiveTab("create");
+  };
+
+  const [nfcScanning, setNfcScanning] = useState(false);
+  const [nfcSupported, setNfcSupported] = useState('NDEFReader' in window);
+
+  // ── Registration ──
+  const [registerCardId, setRegisterCardId] = useState(null);
+  const [registerLoading, setRegisterLoading] = useState(false);
+  const [registerError, setRegisterError] = useState("");
+
+  // ── PIN Modal ──
+  const [pinModal, setPinModal] = useState(null); // { action, proposalId?, proposalTitle? }
   const [pinError, setPinError] = useState("");
-  const [pinAction, setPinAction] = useState("vote"); // "vote" or "balance"
-  const [cropImageSrc, setCropImageSrc] = useState(null);
-  const [crop, setCrop] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
-  const [summaryByProposalId, setSummaryByProposalId] = useState({});
-  const [summaryLoadingProposalId, setSummaryLoadingProposalId] =
-    useState(null);
+
+  // ── Create Proposal ──
+  const [creating, setCreating] = useState(false);
+  const [createMode, setCreateMode] = useState("manual");
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState("");
   const [form, setForm] = useState({
     title: "",
     description: "",
     category: "General",
-    fundsRequested: "",
+    fiatBudget: "",
     imageFile: null,
   });
 
-  // AI Proposal Generation state
-  const [createMode, setCreateMode] = useState("manual"); // "manual" | "ai"
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiError, setAiError] = useState("");
-
-  const aiErrorRef = useRef(null); // Just spacing alignment
-  const pendingProposalRef = useRef(null);
   const toastTimerRef = useRef(null);
   const voterTimeoutRef = useRef(null);
+  const socketRef = useRef(null);
 
-  useEffect(() => {
-    pendingProposalRef.current = pendingProposal;
-  }, [pendingProposal]);
-
+  // ── Computed ──
   const totalVotes = useMemo(
-    () => proposals.reduce((acc, proposal) => acc + (proposal.votes || 0), 0),
+    () => proposals.reduce((acc, p) => acc + (p.votes || 0), 0),
     [proposals],
   );
-
   const activeProposals = useMemo(
-    () => proposals.filter((proposal) => proposal.status === "active").length,
+    () => proposals.filter((p) => p.status === "active").length,
     [proposals],
   );
 
+  // ── Helpers ──
   const notify = useCallback((message) => {
     setToast(message);
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-    }
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast(""), 3500);
   }, []);
 
@@ -88,151 +282,49 @@ function App() {
   const decodeApiPayload = useCallback((data) => {
     if (data && typeof data === "object" && typeof data.payload === "string") {
       const decrypted = decrypt(data.payload);
-      if (!decrypted) {
-        throw new Error("Unable to decrypt server payload");
-      }
+      if (!decrypted) throw new Error("Unable to decrypt server payload");
       return JSON.parse(decrypted);
     }
     return data;
   }, []);
 
   const apiGet = useCallback(
-    async (path, fallbackMessage) => {
-      const response = await fetch(toApiPath(path));
-      const raw = await response.json();
+    async (path, fallback) => {
+      const res = await fetch(toApiPath(path));
+      const raw = await res.json();
       const data = decodeApiPayload(raw);
-      if (!response.ok) {
-        throw new Error(data?.error || fallbackMessage);
-      }
+      if (!res.ok) throw new Error(data?.error || fallback);
       return data;
     },
     [decodeApiPayload, toApiPath],
   );
 
   const apiPost = useCallback(
-    async (path, body, fallbackMessage) => {
-      const encryptedPayload = encrypt(JSON.stringify(body));
-      const response = await fetch(toApiPath(path), {
+    async (path, body, fallback) => {
+      const encrypted = encrypt(JSON.stringify(body));
+      const res = await fetch(toApiPath(path), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: encryptedPayload }),
+        body: JSON.stringify({ payload: encrypted }),
       });
-      const raw = await response.json();
+      const raw = await res.json();
       const data = decodeApiPayload(raw);
-      if (!response.ok) {
-        throw new Error(data?.error || fallbackMessage);
-      }
+      if (!res.ok) throw new Error(data?.error || fallback);
       return data;
     },
     [decodeApiPayload, toApiPath],
   );
 
-  const fetchProposals = useCallback(async () => {
-    try {
-      const data = await apiGet("/proposals", "Failed to load proposals");
-      setProposals(data);
-    } catch (error) {
-      notify(`API error: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [apiGet, notify]);
-
-  const fetchContractInfo = useCallback(async () => {
-    try {
-      const data = await apiGet("/contract", "Failed to load contract details");
-      setContractInfo(data);
-    } catch (error) {
-      notify(`Contract bootstrap error: ${error.message}`);
-    }
-  }, [apiGet, notify]);
-
-  const castVote = useCallback(
-    async (encryptedPayload, proposalId, proposalTitle, pin) => {
-      try {
-        await apiPost("/vote", { encryptedPayload, proposalId, pin }, "Vote request failed");
-        notify(`Vote transaction submitted for ${proposalTitle}`);
-        setPinModalOpen(false);
-        setPinValue("");
-        setPendingProposal(null);
-        setScannedPayload(null);
-      } catch (error) {
-        setPinError(`Vote failed: ${error.message}`);
-      }
-    },
-    [apiPost, notify],
-  );
-
-  const checkBalance = useCallback(
-    async (encryptedPayload, pin) => {
-      try {
-        const data = await apiPost("/verify-pin", { encryptedPayload, pin }, "Balance check failed");
-        setCurrentVoter((prev) => ({ ...prev, tokenBalance: data.tokenBalance }));
-        setPinModalOpen(false);
-        setPinValue("");
-        setPinAction("vote");
-        setScannedPayload(null);
-        
-        // Auto-hide the balance after 7 seconds for security
-        setTimeout(() => {
-          setCurrentVoter((prev) => {
-            if (!prev) return prev;
-            return { ...prev, tokenBalance: null };
-          });
-        }, 7000);
-      } catch (error) {
-        setPinError(`Verification failed: ${error.message}`);
-      }
-    },
-    [apiPost],
-  );
-
-  const handlePinSubmit = (e) => {
-    e.preventDefault();
-    if (pinValue.length < 4) {
-      setPinError("PIN must be at least 4 digits");
-      return;
-    }
-    if (pinAction === "balance" && scannedPayload) {
-      setPinError("");
-      checkBalance(scannedPayload, pinValue);
-      return;
-    }
-    const pending = pendingProposalRef.current;
-    if (pending?.id && scannedPayload) {
-      setPinError("");
-      castVote(scannedPayload, pending.id, pending.title, pinValue);
-    }
-  };
-
-  const handlePinCancel = () => {
-    setPinModalOpen(false);
-    setPinValue("");
-    setScannedPayload(null);
-    setPendingProposal(null);
-    setPinError("");
-  };
-
-  const simulateTap = async () => {
-    try {
-      const data = await apiGet(
-        `/scan?cardId=${encodeURIComponent(selectedCardId)}`,
-        "Card scan failed",
-      );
-      notify(`Card verified for ${data.voter}`);
-    } catch (error) {
-      notify(`Scan failed: ${error.message}`);
-    }
-  };
-
-  const simulateTapForCard = useCallback(
+  // ── NFC Scan (triggered by iOS Shortcut / Android NFC app or manual input) ──
+  const scanCard = useCallback(
     async (cardId) => {
+      if (!cardId) return;
       try {
-        const data = await apiGet(
-          `/scan?cardId=${encodeURIComponent(cardId)}`,
+        const sid = socketRef.current?.id || "";
+        await apiGet(
+          `/scan?cardId=${encodeURIComponent(cardId)}&socketId=${encodeURIComponent(sid)}`,
           "Card scan failed",
         );
-        notify(`Card verified for ${data.voter}`);
       } catch (error) {
         notify(`Scan failed: ${error.message}`);
       }
@@ -240,62 +332,160 @@ function App() {
     [apiGet, notify],
   );
 
-  const createProposal = async (event) => {
-    event.preventDefault();
-    if (!form.title.trim() || !form.fundsRequested) {
-      notify("Title and token amount are required");
-      return;
-    }
-
-    setCreating(true);
-
-    let imageUrl = "";
-    if (form.imageFile) {
+  // ── Register a new card ──
+  const registerCard = useCallback(
+    async ({ cardId, name, pin }) => {
+      setRegisterLoading(true);
+      setRegisterError("");
       try {
-        const formData = new FormData();
-        formData.append("image", form.imageFile);
-        
-        const uploadRes = await fetch(toApiPath("/upload"), {
-          method: "POST",
-          body: formData,
+        const data = await apiPost("/register", { cardId, name, pin }, "Registration failed");
+        setCurrentVoter({
+          ...data.voter,
+          cardId,
         });
-        if (!uploadRes.ok) throw new Error("Image upload failed");
-        
-        const uploadData = await uploadRes.json();
-        imageUrl = uploadData.imageUrl || "";
-      } catch (e) {
-        notify(`Image upload warning: ${e.message}`);
+        setRegisterCardId(null);
+        notify(`Welcome, ${data.voter.name}! Card registered with 1000 tokens.`);
+
+        // Reset voter timeout
+        if (voterTimeoutRef.current) clearTimeout(voterTimeoutRef.current);
+        voterTimeoutRef.current = setTimeout(() => setCurrentVoter(null), 120000);
+      } catch (error) {
+        setRegisterError(error.message);
+      } finally {
+        setRegisterLoading(false);
       }
-    }
+    },
+    [apiPost, notify],
+  );
 
-    const payload = {
-      title: form.title.trim(),
-      description: form.description.trim(),
-      category: form.category,
-      fundsRequested: Number(form.fundsRequested),
-      imageUrl,
-    };
+  // ── Cast Vote ──
+  const castVote = useCallback(
+    async (pin) => {
+      if (!pinModal || !currentVoter?.encryptedPayload) return;
+      setPinError("");
+      try {
+        await apiPost(
+          "/vote",
+          {
+            encryptedPayload: currentVoter.encryptedPayload,
+            proposalId: pinModal.proposalId,
+            pin,
+          },
+          "Vote request failed",
+        );
+        notify(`Vote submitted for "${pinModal.proposalTitle}"`);
+        setPinModal(null);
+        setPreviewProposal(null);
+      } catch (error) {
+        setPinError(error.message);
+      }
+    },
+    [apiPost, currentVoter, notify, pinModal],
+  );
 
-    try {
-      await apiPost("/proposals", payload, "Create proposal failed");
-      setForm({
-        title: "",
-        description: "",
-        category: "General",
-        fundsRequested: "",
-        imageFile: null,
+  // ── Check Balance ──
+  const checkBalance = useCallback(
+    async (pin) => {
+      if (!currentVoter?.encryptedPayload) return;
+      setPinError("");
+      try {
+        const data = await apiPost(
+          "/verify-pin",
+          { encryptedPayload: currentVoter.encryptedPayload, pin },
+          "Balance check failed",
+        );
+        setCurrentVoter((prev) => ({ ...prev, tokenBalance: data.tokenBalance }));
+        setPinModal(null);
+        // Auto-hide balance after 10s
+        setTimeout(() => {
+          setCurrentVoter((prev) => prev ? { ...prev, tokenBalance: null } : prev);
+        }, 10000);
+      } catch (error) {
+        setPinError(error.message);
+      }
+    },
+    [apiPost, currentVoter],
+  );
+
+  // ── Create Proposal ──
+  const createProposal = useCallback(
+    async (e) => {
+      e.preventDefault();
+      if (!form.title.trim()) {
+        notify("Please provide a title");
+        return;
+      }
+      if (!form.fiatBudget) {
+        notify("Please set the estimated budget");
+        return;
+      }
+
+      const budget = Number(form.fiatBudget);
+      let requiredTokens = 1000;
+      if (budget > 100000) requiredTokens = 10000;
+      else if (budget > 10000) requiredTokens = 5000;
+
+      setPinError("");
+      setPinModal({
+        action: "create",
+        requiredTokens,
       });
-      notify("Proposal created and broadcast to all clients");
-    } catch (error) {
-      notify(`Create failed: ${error.message}`);
-    } finally {
-      setCreating(false);
-    }
-  };
+    },
+    [form, notify],
+  );
 
-  const generateProposal = async () => {
+  const executeCreateProposal = useCallback(
+    async (pin) => {
+      if (!currentVoter?.encryptedPayload || !pinModal?.requiredTokens) return;
+      setCreating(true);
+      setPinError("");
+
+      let imageUrl = "";
+      if (form.imageFile) {
+        try {
+          const fd = new FormData();
+          fd.append("image", form.imageFile);
+          const uploadRes = await fetch(toApiPath("/upload"), { method: "POST", body: fd });
+          if (!uploadRes.ok) throw new Error("Upload failed");
+          const uploadData = await uploadRes.json();
+          imageUrl = uploadData.imageUrl || "";
+        } catch (err) {
+          notify(`Image upload warning: ${err.message}`);
+        }
+      }
+
+      try {
+        await apiPost(
+          "/proposals",
+          {
+            title: form.title.trim(),
+            description: form.description.trim(),
+            category: form.category,
+            fundsRequested: pinModal.requiredTokens,
+            imageUrl,
+            encryptedPayload: currentVoter.encryptedPayload,
+            pin,
+          },
+          "Create proposal failed",
+        );
+        setForm({ title: "", description: "", category: "General", fiatBudget: "", imageFile: null });
+        setPinModal(null);
+        notify("Proposal created! 200 tokens deducted.");
+        setIntendedAction("read");
+        setActiveTab("vote");
+      } catch (error) {
+        setPinError(error.message);
+      } finally {
+        setCreating(false);
+      }
+    },
+    [apiPost, currentVoter, form, notify, pinModal, toApiPath],
+  );
+
+  // ── AI Generate ──
+  const generateProposal = useCallback(async () => {
     if (!aiPrompt.trim()) {
-      setAiError("Please describe your proposal idea first");
+      setAiError("Describe your proposal idea first");
       return;
     }
     setAiGenerating(true);
@@ -306,14 +496,12 @@ function App() {
         { text: aiPrompt.trim() },
         "AI generation failed",
       );
-      // Pre-fill the manual form with AI-generated fields
       setForm((prev) => ({
         ...prev,
         title: generated.title || prev.title,
         description: generated.description || prev.description,
         category: generated.category || prev.category,
       }));
-      // Switch to manual mode so user can review and set token amount
       setCreateMode("manual");
       notify("AI filled your proposal — review and set token amount");
     } catch (error) {
@@ -321,77 +509,37 @@ function App() {
     } finally {
       setAiGenerating(false);
     }
-  };
+  }, [aiPrompt, apiPost, notify]);
 
-  const summarizeProposalProblem = useCallback(
-    async (proposal, options = {}) => {
-      if (!proposal?.id) return;
-
-      const forceRefresh = Boolean(options.forceRefresh);
-      const cachedSummary = summaryByProposalId[proposal.id]?.summary;
-      if (cachedSummary && !forceRefresh) {
-        return;
-      }
-
-      setSummaryLoadingProposalId(proposal.id);
-
-      setSummaryByProposalId((prev) => ({
-        ...prev,
-        [proposal.id]: {
-          ...(prev[proposal.id] || {}),
-          error: "",
-        },
-      }));
-
-      try {
-        const response = await requestProposalProblemSummary({
-          apiPost,
-          proposal,
-        });
-
-        setSummaryByProposalId((prev) => ({
-          ...prev,
-          [proposal.id]: {
-            summary: response.summary,
-            model: response.model,
-            error: "",
-          },
-        }));
-      } catch (error) {
-        setSummaryByProposalId((prev) => ({
-          ...prev,
-          [proposal.id]: {
-            ...(prev[proposal.id] || {}),
-            error:
-              error.message ||
-              "Summary could not be generated right now. Please try again.",
-          },
-        }));
-      } finally {
-        setSummaryLoadingProposalId((current) =>
-          current === proposal.id ? null : current,
-        );
-      }
+  // ── PIN Submit Handler ──
+  const handlePinSubmit = useCallback(
+    (pin) => {
+      if (!pinModal) return;
+      if (pinModal.action === "balance") return checkBalance(pin);
+      if (pinModal.action === "vote") return castVote(pin);
+      if (pinModal.action === "create") return executeCreateProposal(pin);
     },
-    [apiPost, summaryByProposalId],
+    [pinModal, checkBalance, castVote, executeCreateProposal],
   );
 
+  // ── Socket.IO Setup ──
   useEffect(() => {
-    fetchContractInfo();
-    fetchProposals();
-
     const socket = io(SOCKET_BASE, {
       path: "/socket.io",
       transports: ["websocket", "polling"],
     });
+    socketRef.current = socket;
 
-    socket.on("connect", () => setConnected(true));
+    socket.on("connect", () => {
+      setConnected(true);
+      setSocketId(socket.id);
+    });
     socket.on("disconnect", () => setConnected(false));
 
     socket.on("init", (payload) => {
       setProposals(payload.proposals || []);
       setTransactions(payload.transactions || []);
-      setCurrentVoter(payload.currentVoter || null);
+      setSocketId(payload.socketId || socket.id);
       setLoading(false);
     });
 
@@ -400,486 +548,623 @@ function App() {
     });
 
     socket.on("card-scanned", (payload) => {
+      if (payload.type === "unregistered") {
+        // Unknown card — show registration modal
+        setRegisterCardId(payload.cardId);
+        return;
+      }
+
+      // Known card — set voter
       setCurrentVoter(payload.voter || null);
       if (payload.transaction) {
         setTransactions((prev) => [payload.transaction, ...prev].slice(0, 20));
       }
 
-      if (voterTimeoutRef.current) {
-        clearTimeout(voterTimeoutRef.current);
-      }
-      
-      // Auto-logout user after 10 seconds to hide identifying information and secure session
+      // Auto-expire identity after 2 minutes
+      if (voterTimeoutRef.current) clearTimeout(voterTimeoutRef.current);
       voterTimeoutRef.current = setTimeout(() => {
         setCurrentVoter(null);
-        setPinModalOpen(false); // Hide the vault modal if they abandon it
-      }, 10000);
-
-      const pending = pendingProposalRef.current;
-      if (pending?.id && payload.voter?.encryptedPayload) {
-        setScannedPayload(payload.voter.encryptedPayload);
-        setPinModalOpen(true);
-      }
+        setPinModal(null);
+      }, 120000);
     });
 
     socket.on("vote-recorded", (payload) => {
       setProposals((prev) =>
-        prev.map((proposal) =>
-          proposal.id === payload.proposal.id ? payload.proposal : proposal,
-        ),
+        prev.map((p) => (p.id === payload.proposal.id ? payload.proposal : p)),
       );
       if (payload.transaction) {
         setTransactions((prev) => [payload.transaction, ...prev].slice(0, 20));
       }
       if (payload.voter) {
-        setCurrentVoter((prev) => ({ ...prev, ...payload.voter }));
+        setCurrentVoter((prev) => (prev ? { ...prev, ...payload.voter } : prev));
       }
       notify(`Vote recorded for "${payload.proposal.title}"`);
     });
 
-    return () => {
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-      }
-      if (voterTimeoutRef.current) {
-        clearTimeout(voterTimeoutRef.current);
-      }
-      socket.disconnect();
-    };
-  }, [castVote, fetchContractInfo, fetchProposals, notify]);
+    socket.on("voter-registered", () => {
+      // Could show a notification, but keep it quiet for other kiosks
+    });
 
-  useEffect(() => {
+    // Check URL for cardId parameter (from NFC shortcut)
     const params = new URLSearchParams(window.location.search);
     const cardFromUrl = params.get("cardId");
-    if (!cardFromUrl) return;
+    if (cardFromUrl) {
+      // Wait for socket to connect before processing card scan
+      const processCardScan = () => {
+        if (socket.connected) {
+          scanCard(cardFromUrl);
+          // Clean URL only after successful scan
+          window.history.replaceState({}, "", window.location.pathname);
+        } else {
+          // Retry if socket not connected yet
+          setTimeout(processCardScan, 200);
+        }
+      };
+      // Start processing after a short delay to ensure socket initialization
+      setTimeout(processCardScan, 300);
+    }
 
-    setSelectedCardId(cardFromUrl);
-    simulateTapForCard(cardFromUrl);
-  }, [simulateTapForCard]);
+    // Fetch proposals
+    fetch(`${API_BASE}/proposals`)
+      .then((r) => r.json())
+      .then((raw) => {
+        try {
+          const decoded =
+            raw?.payload ? JSON.parse(decrypt(raw.payload)) : raw;
+          setProposals(decoded || []);
+        } catch {
+          /* noop */
+        }
+      })
+      .catch(() => { })
+      .finally(() => setLoading(false));
 
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (voterTimeoutRef.current) clearTimeout(voterTimeoutRef.current);
+      socket.disconnect();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Native WebNFC Scan (Android / HTTPS only) ──
+  const startNativeScan = async () => {
+    if (!('NDEFReader' in window)) {
+      notify("Native NFC scanning is not supported on this browser (or it's not HTTPS/Localhost).");
+      return;
+    }
+
+    try {
+      setNfcScanning(true);
+      const ndef = new window.NDEFReader();
+      await ndef.scan();
+
+      notify("Ready to scan. Please tap your NFC card.");
+
+      ndef.addEventListener("reading", ({ serialNumber }) => {
+        // Stop scanning after a successful read
+        setNfcScanning(false);
+        if (serialNumber) {
+          const formattedId = serialNumber.replace(/:/g, "").toUpperCase();
+          scanCard(formattedId);
+        } else {
+          notify("Card read successfully, but no serial number found.");
+        }
+      });
+
+      ndef.addEventListener("readingerror", () => {
+        setNfcScanning(false);
+        notify("Cannot read data from the NFC tag. Try another one.");
+      });
+
+    } catch (error) {
+      setNfcScanning(false);
+      notify(`NFC Error: ${error.message}`);
+    }
+  };
+
+  // ── Manual card scan ──
+  const handleManualScan = () => {
+    const id = manualCardId.trim();
+    if (!id) return;
+    scanCard(id);
+    setManualCardId("");
+  };
+
+  // ── Start vote flow ──
+  const startVoteFlow = (proposal) => {
+    if (!currentVoter) {
+      notify("Scan your card first to vote");
+      return;
+    }
+    setPinError("");
+    setPinModal({
+      action: "vote",
+      proposalId: proposal.id,
+      proposalTitle: proposal.title,
+    });
+  };
+
+  // ═══ RENDER ═══
+
+  // ─── GATE: Entry / Welcome ───
+  if (!intendedAction && !currentVoter) {
+    return (
+      <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <div className="panel" style={{ textAlign: "center", maxWidth: "400px", width: "100%", margin: "0 auto", padding: "2rem" }}>
+          <h2>Welcome to Tap DAO</h2>
+          <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
+            What would you like to do today?
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <button className="primary-btn btn-block" style={{ padding: "1rem", fontSize: "1.1rem" }} onClick={() => handleActionSelect("read")}>
+              📖 Read Proposals
+            </button>
+            <button className="secondary-btn btn-block" style={{ padding: "1rem", fontSize: "1.1rem" }} onClick={() => handleActionSelect("write")}>
+              📝 Write a Proposal
+            </button>
+          </div>
+        </div>
+        {toast ? <div className="toast">{toast}</div> : null}
+      </div>
+    );
+  }
+
+  // ─── GATE: Welcome (Tap-First) ───
+  if (!intendedAction && currentVoter) {
+    return (
+      <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <div className="panel" style={{ textAlign: "center", maxWidth: "400px", width: "100%", margin: "0 auto", padding: "2rem" }}>
+          <h2>Welcome Back, {currentVoter.name}!</h2>
+          <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
+            Identity verified. Where to?
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <button className="primary-btn btn-block" style={{ padding: "1rem", fontSize: "1.1rem" }} onClick={() => handleActionSelect("read")}>
+              📖 View Dashboard
+            </button>
+            <button className="secondary-btn btn-block" style={{ padding: "1rem", fontSize: "1.1rem" }} onClick={() => handleActionSelect("write")}>
+              📝 Create Proposal
+            </button>
+          </div>
+        </div>
+        {toast ? <div className="toast">{toast}</div> : null}
+      </div>
+    );
+  }
+
+  // ─── GATE: Scan (Click-First) ───
+  if (intendedAction && !currentVoter) {
+    return (
+      <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <div className="panel" style={{ textAlign: "center", maxWidth: "400px", width: "100%", margin: "0 auto", padding: "2rem", position: "relative" }}>
+          <button
+            className="secondary-btn"
+            style={{ position: "absolute", top: "1rem", left: "1rem", padding: "0.2rem 0.5rem" }}
+            onClick={() => setIntendedAction(null)}
+          >
+            ← Back
+          </button>
+
+          <h2 style={{ marginTop: "1rem" }}>Identify Yourself</h2>
+          <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
+            Please tap your NFC card to your device to {intendedAction === "read" ? "access the dashboard" : "create a proposal"}.
+          </p>
+
+          <button
+            type="button"
+            className="scan-btn"
+            onClick={startNativeScan}
+            style={{ marginBottom: "1rem", backgroundColor: nfcScanning ? "var(--itom-charcoal)" : undefined, color: nfcScanning ? "var(--itom-white)" : undefined }}
+          >
+            <span className="scan-icon">◉</span>
+            <span>{nfcScanning ? "Scanning..." : "Scan NFC Card"}</span>
+          </button>
+
+          <p style={{ margin: "1.5rem 0 0.5rem", fontSize: "0.8rem", color: "var(--ink-muted)" }}>
+            — OR MANUALLY ENTER ID —
+          </p>
+          <div className="manual-card-input" style={{ justifyContent: "center" }}>
+            <input
+              type="text"
+              value={manualCardId}
+              onChange={(e) => setManualCardId(e.target.value)}
+              placeholder="Enter Card ID..."
+              onKeyDown={(e) => { if (e.key === "Enter") handleManualScan(); }}
+              style={{ maxWidth: "150px" }}
+            />
+            <button type="button" className="secondary-btn" onClick={handleManualScan}>
+              Submit
+            </button>
+          </div>
+        </div>
+
+        {registerCardId ? (
+          <RegisterModal
+            cardId={registerCardId}
+            onRegister={registerCard}
+            onCancel={() => { setRegisterCardId(null); setRegisterError(""); }}
+            loading={registerLoading}
+            error={registerError}
+          />
+        ) : null}
+        {toast ? <div className="toast">{toast}</div> : null}
+      </div>
+    );
+  }
+
+  // ─── MAIN APP SHELL (Action + Voter present) ───
   return (
     <div className="app-shell">
+      {/* ── Top Bar ── */}
       <header className="topbar">
-        <div>
-          <p className="eyebrow">Off-Grid DAO</p>
-          <h1>Community Voting Console</h1>
-        </div>
-        <div className={`status ${connected ? "online" : "offline"}`}>
-          <span className="dot" />
-          <span>{connected ? "Socket Connected" : "Socket Disconnected"}</span>
+        <h1>Tap DAO</h1>
+        <div className="topbar-right">
+          {currentVoter ? (
+            <div
+              className="identity-badge"
+              onClick={() => {
+                setPinError("");
+                setPinModal({ action: "balance" });
+              }}
+              title="Tap to check balance"
+            >
+              <span className="badge-avatar">{currentVoter.avatar || "👤"}</span>
+              <span>{currentVoter.name}</span>
+              {currentVoter.tokenBalance != null ? (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem" }}>
+                  {currentVoter.tokenBalance}t
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          <div className={`status ${connected ? "online" : "offline"}`}>
+            <span className="dot" />
+            <span>{connected ? "Live" : "Off"}</span>
+          </div>
         </div>
       </header>
 
-      <section className="stats-grid">
-        <article>
-          <p>Active Proposals</p>
-          <strong>{activeProposals}</strong>
-        </article>
-        <article>
-          <p>Total Votes</p>
-          <strong>{totalVotes}</strong>
-        </article>
-        <article>
-          <p>Live Feed Items</p>
-          <strong>{transactions.length}</strong>
-        </article>
-        <article>
-          <p>Contract</p>
-          <strong>
-            {contractInfo?.contractAddress
-              ? `${contractInfo.contractAddress.slice(0, 10)}...`
-              : "Waiting..."}
-          </strong>
-        </article>
-      </section>
+      {/* ── Tab Content ── */}
+      <div className="tab-content">
+        {/* ─── VOTE TAB ─── */}
+        {activeTab === "vote" && (
+          <>
+            {/* Stats */}
+            <div className="stats-row">
+              <div className="stat-card">
+                <p>Proposals</p>
+                <strong>{activeProposals}</strong>
+              </div>
+              <div className="stat-card">
+                <p>Votes</p>
+                <strong>{totalVotes}</strong>
+              </div>
+              <div className="stat-card">
+                <p>Voters</p>
+                <strong>{transactions.filter((t) => t.type === "IDENTITY_VERIFY").length}</strong>
+              </div>
+            </div>
 
-      <main className="content-grid">
-        <section className="panel controls">
-          <h2>NFC + Vote Flow</h2>
-          <p>
-            Pick a proposal, then simulate an NFC tap. The card scan triggers
-            backend identity verification and then submits the vote transaction.
-          </p>
-
-          <label>
-            Card ID
-            <select
-              value={selectedCardId}
-              onChange={(event) => setSelectedCardId(event.target.value)}
-            >
-              {CARD_OPTIONS.map((card) => (
-                <option key={card.id} value={card.id}>
-                  {card.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <button type="button" onClick={simulateTap} className="primary-btn">
-            Simulate NFC Tap
-          </button>
-
-          <div className="voter-card">
-            <p>Current Voter</p>
-            <strong>{currentVoter?.name || "No card scanned yet"}</strong>
-            <small>
-              {currentVoter?.wallet || "Wallet will appear after scan"}
-            </small>
+            {/* Identity Section - Now handled by Gates */}
             {currentVoter ? (
-              <div style={{ marginTop: "1rem" }}>
-                {currentVoter.tokenBalance == null ? (
-                  <button 
-                    type="button" 
-                    className="secondary-btn" 
-                    onClick={() => { 
-                      setPinAction("balance"); 
-                      setScannedPayload(currentVoter.encryptedPayload); 
-                      setPinModalOpen(true); 
-                    }}
-                  >
-                    Check Balance
-                  </button>
+              <div className="voter-card">
+                <span className="voter-avatar">{currentVoter.avatar || "👤"}</span>
+                <div className="voter-info">
+                  <strong>{currentVoter.name}</strong>
+                  <small>{currentVoter.wallet ? `${currentVoter.wallet.slice(0, 8)}...${currentVoter.wallet.slice(-6)}` : ""}</small>
+                </div>
+                {currentVoter.tokenBalance != null ? (
+                  <span className="voter-balance">{currentVoter.tokenBalance}t</span>
                 ) : (
-                  <strong>Balance: {currentVoter.tokenBalance} tokens</strong>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    style={{ fontSize: "0.75rem", padding: "0.4rem 0.6rem", minHeight: "auto" }}
+                    onClick={() => { setPinError(""); setPinModal({ action: "balance" }); }}
+                  >
+                    Balance
+                  </button>
                 )}
               </div>
             ) : null}
-          </div>
-        </section>
 
-        <section className="panel proposals">
-          <h2>Live Proposals</h2>
-          {loading ? <p>Loading proposals...</p> : null}
-          <div className="proposal-list">
-            {proposals.map((proposal) => {
-              const tokensReceived = (proposal.votes || 0) * 100;
-              const fundsReq = proposal.fundsRequested || 1;
-              const rawPercent = (tokensReceived / fundsReq) * 100;
-              const progressPercent = Math.min(rawPercent, 100).toFixed(1);
+            {/* Proposal List */}
+            <div className="section-header">
+              <h2>Proposals</h2>
+            </div>
 
-              let barColor = "#10B981"; // Green for near-complete
-              if (rawPercent < 33) barColor = "#EF4444"; // Red for early
-              else if (rawPercent < 66) barColor = "#F59E0B"; // Yellow for halfway
+            {loading ? (
+              <div className="loading-row">
+                <span className="spinner" />
+                <span>Loading proposals...</span>
+              </div>
+            ) : proposals.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon">📋</div>
+                <p>No proposals yet. Create the first one!</p>
+              </div>
+            ) : (
+              <div className="proposal-list">
+                {proposals.map((proposal) => {
+                  const tokensReceived = (proposal.votes || 0) * 100;
+                  const fundsReq = proposal.fundsRequested || 1;
+                  const rawPercent = (tokensReceived / fundsReq) * 100;
+                  const percent = Math.min(rawPercent, 100).toFixed(1);
 
-              return (
-                <article
-                  key={proposal.id}
-                  className="proposal-item clickable"
-                  style={{ position: "relative", overflow: "hidden", borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
-                  onClick={() => setPreviewProposal(proposal)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setPreviewProposal(proposal);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
+                  let barColor = "#10B981";
+                  if (rawPercent < 33) barColor = "#EF4444";
+                  else if (rawPercent < 66) barColor = "#F59E0B";
+
+                  return (
+                    <article
+                      key={proposal.id}
+                      className="proposal-card"
+                      onClick={() => setPreviewProposal(proposal)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setPreviewProposal(proposal);
+                        }
+                      }}
+                    >
+                      {proposal.imageUrl ? (
+                        <div className="proposal-thumbnail-wrapper">
+                          <img src={proposal.imageUrl} alt="" className="proposal-thumbnail" />
+                        </div>
+                      ) : null}
+                      <h3>{proposal.title}</h3>
+                      <p className="desc">{proposal.description || "No description."}</p>
+                      <div className="proposal-meta">
+                        <span>{proposal.category}</span>
+                        <span>{tokensReceived}/{proposal.fundsRequested}t</span>
+                        <span>{percent}%</span>
+                        <span>{proposal.votes} votes</span>
+                      </div>
+                      <div
+                        className="proposal-progress"
+                        style={{
+                          width: `${percent}%`,
+                          backgroundColor: barColor,
+                        }}
+                      />
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ─── CREATE TAB ─── */}
+        {activeTab === "create" && (
+          <>
+            <div className="panel">
+              <h2>Create Proposal</h2>
+
+              <div className="create-mode-tabs">
+                <button
+                  type="button"
+                  className={`mode-tab ${createMode === "manual" ? "active" : ""}`}
+                  onClick={() => setCreateMode("manual")}
                 >
-                  {proposal.imageUrl ? (
-                    <div className="proposal-thumbnail-wrapper">
-                      <img src={proposal.imageUrl} alt="" className="proposal-thumbnail" />
-                    </div>
-                  ) : null}
-                  <div>
-                    <h3>{proposal.title}</h3>
-                    <p>{proposal.description || "No description provided."}</p>
-                  </div>
-                  <div className="proposal-meta">
-                    <span>{proposal.category}</span>
-                    <span>{tokensReceived} / {proposal.fundsRequested} tokens</span>
-                    <span>{progressPercent}%</span>
-                  </div>
+                  Manual
+                </button>
+                <button
+                  type="button"
+                  className={`mode-tab ${createMode === "ai" ? "active" : ""}`}
+                  onClick={() => setCreateMode("ai")}
+                >
+                  AI Assist
+                </button>
+              </div>
+
+              {createMode === "ai" ? (
+                <div className="ai-mode">
+                  <p className="ai-hint">
+                    Describe your proposal idea in plain language. AI will structure it.
+                  </p>
+                  <textarea
+                    className="ai-textarea"
+                    rows="4"
+                    value={aiPrompt}
+                    onChange={(e) => { setAiPrompt(e.target.value); setAiError(""); }}
+                    placeholder='e.g. "We need better street lights in sector 7..."'
+                  />
+                  {aiError ? <p className="error-text">{aiError}</p> : null}
                   <button
                     type="button"
-                    className={
-                      pendingProposal?.id === proposal.id
-                        ? "secondary-btn active"
-                        : "secondary-btn"
-                    }
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setPendingProposal(proposal);
-                    }}
+                    className="primary-btn btn-block"
+                    onClick={generateProposal}
+                    disabled={aiGenerating}
                   >
-                    {pendingProposal?.id === proposal.id
-                      ? "Awaiting Tap..."
-                      : "Select for Vote"}
+                    {aiGenerating ? "Generating..." : "Generate Proposal"}
                   </button>
-                  <div
-                    style={{
-                      position: "absolute",
-                      bottom: 0,
-                      left: 0,
-                      height: "6px",
-                      width: `${progressPercent}%`,
-                      backgroundColor: barColor,
-                      transition: "width 0.4s ease-out, background-color 0.4s ease",
-                      borderBottomRightRadius: progressPercent >= 100 ? "0" : "4px"
-                    }}
-                    title={`${progressPercent}% Funded`}
-                  />
-                </article>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="panel create">
-          <h2>Create Proposal</h2>
-
-          <div className="create-mode-tabs">
-            <button
-              type="button"
-              className={`mode-tab ${createMode === "manual" ? "active" : ""}`}
-              onClick={() => setCreateMode("manual")}
-            >
-              ✏️ Manual
-            </button>
-            <button
-              type="button"
-              className={`mode-tab ${createMode === "ai" ? "active" : ""}`}
-              onClick={() => setCreateMode("ai")}
-            >
-              ✨ AI Assist
-            </button>
-          </div>
-
-          {createMode === "ai" ? (
-            <div className="ai-mode">
-              <p className="ai-hint">
-                Describe your proposal idea in plain language. The AI will
-                structure it into a formal proposal for you to review.
-              </p>
-              <textarea
-                className="ai-textarea"
-                rows="5"
-                value={aiPrompt}
-                onChange={(e) => { setAiPrompt(e.target.value); setAiError(""); }}
-                placeholder='e.g. "We need better street lights in sector 7, the main road is completely dark after 8pm and people feel unsafe walking..."'
-              />
-              {aiError ? <p className="error-text">{aiError}</p> : null}
-              <button
-                type="button"
-                className="primary-btn ai-generate-btn"
-                onClick={generateProposal}
-                disabled={aiGenerating}
-              >
-                {aiGenerating ? "Generating..." : "✨ Generate Proposal"}
-              </button>
-              {aiGenerating ? (
-                <div className="summary-loading" role="status">
-                  <span className="spinner" aria-hidden="true" />
-                  <p>AI is structuring your proposal...</p>
+                  {aiGenerating ? (
+                    <div className="loading-row">
+                      <span className="spinner" />
+                      <span>AI is structuring your proposal...</span>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
-          ) : (
-            <form onSubmit={createProposal} className="create-form">
-              <label>
-                Title
-                <input
-                  type="text"
-                  value={form.title}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, title: event.target.value }))
-                  }
-                  placeholder="Community solar lighting"
-                />
-              </label>
-              <label>
-                Description
-                <textarea
-                  rows="3"
-                  value={form.description}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      description: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Category
-                <select
-                  value={form.category}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, category: event.target.value }))
-                  }
-                >
-                  <option value="General">General</option>
-                  <option value="Infrastructure">Infrastructure</option>
-                  <option value="Energy">Energy</option>
-                  <option value="Digital">Digital</option>
-                  <option value="Education">Education</option>
-                  <option value="Health">Health</option>
-                </select>
-              </label>
-              <label>
-                Tokens Requested
-                <input
-                  type="number"
-                  min="1"
-                  value={form.fundsRequested}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      fundsRequested: event.target.value,
-                    }))
-                  }
-                  placeholder="50000"
-                />
-              </label>
-              <label>
-                Image (Optional)
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.addEventListener("load", () =>
-                        setCropImageSrc(reader.result)
-                      );
-                      reader.readAsDataURL(file);
-                    }
-                  }}
-                  className="file-input"
-                  id="proposal-image-input"
-                />
-              </label>
-              {form.imageFile && (
-                <p style={{ marginTop: "0.5rem", fontSize: "0.9rem", color: "var(--itom-light-gray)" }}>
-                  ✅ Cropped image ready: {form.imageFile.name}
-                </p>
+              ) : (
+                <form onSubmit={createProposal} className="create-form">
+                  <label>
+                    Title
+                    <input
+                      type="text"
+                      value={form.title}
+                      onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
+                      placeholder="Community solar lighting"
+                    />
+                  </label>
+                  <label>
+                    Description
+                    <textarea
+                      rows="3"
+                      value={form.description}
+                      onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
+                      placeholder="Describe the proposal..."
+                    />
+                  </label>
+                  <label>
+                    Category
+                    <select
+                      value={form.category}
+                      onChange={(e) => setForm((p) => ({ ...p, category: e.target.value }))}
+                    >
+                      <option value="General">General</option>
+                      <option value="Infrastructure">Infrastructure</option>
+                      <option value="Energy">Energy</option>
+                      <option value="Digital">Digital</option>
+                      <option value="Education">Education</option>
+                      <option value="Health">Health</option>
+                    </select>
+                  </label>
+                  <label>
+                    Estimated Budget (INR)
+                    <input
+                      type="number"
+                      min="1"
+                      value={form.fiatBudget}
+                      onChange={(e) => setForm((p) => ({ ...p, fiatBudget: e.target.value }))}
+                      placeholder="e.g. 150000"
+                    />
+                  </label>
+
+                  {form.fiatBudget && Number(form.fiatBudget) > 0 ? (
+                    <div style={{ padding: "0.75rem", backgroundColor: "var(--itom-light)", borderRadius: "8px", margin: "1rem 0", borderLeft: "4px solid var(--primary-main)" }}>
+                      <strong style={{ display: "block", marginBottom: "0.25rem", color: "var(--itom-charcoal)" }}>Proposal Grade: {
+                        Number(form.fiatBudget) > 100000 ? "A (10,000 Token Goal)" :
+                          Number(form.fiatBudget) > 10000 ? "B (5,000 Token Goal)" : "C (1,000 Token Goal)"
+                      }</strong>
+                      <p style={{ fontSize: "0.80rem", color: "green", margin: 0 }}>
+                        Submission requires 200 tokens (100 creation fee + 100 auto-vote).
+                      </p>
+                    </div>
+                  ) : null}
+                  <label>
+                    Image (Optional)
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="file-input"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) setForm((p) => ({ ...p, imageFile: file }));
+                      }}
+                    />
+                  </label>
+                  {form.imageFile ? (
+                    <p style={{ marginTop: 0, fontSize: "0.85rem", color: "var(--ink-muted)" }}>
+                      Selected: {form.imageFile.name}
+                    </p>
+                  ) : null}
+                  <button type="submit" className="primary-btn btn-block" disabled={creating}>
+                    {creating ? "Submitting..." : "Deploy Proposal"}
+                  </button>
+                </form>
               )}
-              <button type="submit" className="primary-btn" disabled={creating} style={{ marginTop: "1rem" }}>
-                {creating ? "Submitting..." : "Deploy Proposal"}
-              </button>
-            </form>
-          )}
-        </section>
-
-        <section className="panel feed">
-          <h2>Transaction Feed</h2>
-          <div className="feed-list">
-            {transactions.length === 0 ? <p>No transactions yet.</p> : null}
-            {transactions.map((tx) => (
-              <div key={`${tx.hash}-${tx.id}`} className="feed-row">
-                <strong>{tx.type}</strong>
-                <span>{tx.hash}</span>
-                <small>{new Date(tx.timestamp).toLocaleTimeString()}</small>
-              </div>
-            ))}
-          </div>
-        </section>
-      </main>
-
-      {cropImageSrc && (
-        <div className="modal-overlay">
-          <div className="modal-content crop-modal" style={{ width: "90%", maxWidth: "600px" }}>
-            <h2>Crop Image</h2>
-            <div className="cropper-container" style={{ position: "relative", width: "100%", height: "400px", background: "#333", marginTop: "1rem", borderRadius: "8px", overflow: "hidden" }}>
-              <Cropper
-                image={cropImageSrc}
-                crop={crop}
-                zoom={zoom}
-                aspect={16 / 9}
-                onCropChange={setCrop}
-                onCropComplete={(croppedArea, croppedAreaPixels) => setCroppedAreaPixels(croppedAreaPixels)}
-                onZoomChange={setZoom}
-              />
             </div>
-            <div className="modal-actions" style={{ marginTop: "1.5rem" }}>
-              <button 
-                type="button" 
-                className="secondary-btn"
-                onClick={() => {
-                  setCropImageSrc(null);
-                  document.getElementById('proposal-image-input').value = '';
-                }}
-              >
-                Cancel
-              </button>
-              <button 
-                type="button" 
-                className="primary-btn"
-                onClick={async () => {
-                  try {
-                    const croppedBlob = await getCroppedImg(cropImageSrc, croppedAreaPixels, 0);
-                    const croppedFile = new File([croppedBlob], "cropped.jpg", { type: "image/jpeg" });
-                    setForm((prev) => ({ ...prev, imageFile: croppedFile }));
-                    setCropImageSrc(null);
-                    notify("Image cropped securely");
-                  } catch (e) {
-                    notify("Failed to crop image");
-                  }
-                }}
-              >
-                Apply Crop
-              </button>
+          </>
+        )}
+
+        {/* ─── ACTIVITY TAB ─── */}
+        {activeTab === "activity" && (
+          <>
+            <div className="panel">
+              <h2>Transaction Feed</h2>
+              {transactions.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-icon">No Data</div>
+                  <p>No transactions yet. Scan a card or cast a vote.</p>
+                </div>
+              ) : (
+                <div className="feed-list">
+                  {transactions.map((tx) => (
+                    <div key={`${tx.hash}-${tx.id}`} className="feed-row">
+                      <strong>{tx.type === "VOTE_CAST" ? "Vote Cast" : "Identity Verified"}</strong>
+                      <span>{tx.hash}</span>
+                      <small>{new Date(tx.timestamp).toLocaleTimeString()}</small>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-        </div>
-      )}
 
-      <ProposalPreviewModal
-        isOpen={Boolean(previewProposal)}
-        proposal={previewProposal}
-        onClose={() => setPreviewProposal(null)}
-        onSummarize={() => summarizeProposalProblem(previewProposal)}
-        onRefreshSummary={() =>
-          summarizeProposalProblem(previewProposal, { forceRefresh: true })
-        }
-        summaryState={
-          previewProposal ? summaryByProposalId[previewProposal.id] : null
-        }
-        isLoading={summaryLoadingProposalId === previewProposal?.id}
-      />
+            <div className="panel">
+              <h2>Connection</h2>
+              <p>Socket: {connected ? `Connected (${socketId})` : "Disconnected"}</p>
+              <p style={{ marginTop: "0.35rem" }}>
+                NFC Shortcut URL:
+              </p>
+              <p style={{ fontFamily: "var(--font-mono)", fontSize: "0.75rem", wordBreak: "break-all", marginTop: "0.25rem" }}>
+                {`${window.location.origin}/scan?cardId=<CARD_UID>${socketId ? `&socketId=${socketId}` : ""}`}
+              </p>
+            </div>
+          </>
+        )}
+      </div>
 
-      {pinModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-content pin-modal">
-            <h2>Vault Locked</h2>
-            <p className="pin-description">
-              {pinAction === "balance"
-                ? "Please enter your 4-digit PIN to decrypt your wallet and check your balance securely."
-                : "Please enter your 4-digit PIN to decrypt your wallet and authorize this transaction."}
-            </p>
-            <form onSubmit={handlePinSubmit} className="pin-form">
-              <input
-                type="password"
-                maxLength="4"
-                className="pin-input"
-                placeholder="****"
-                value={pinValue}
-                onChange={(e) => { setPinValue(e.target.value); setPinError(""); }}
-                autoFocus
-              />
-              {pinError ? <p className="error-text">{pinError}</p> : null}
-              <div className="modal-actions">
-                <button type="button" className="secondary-btn" onClick={handlePinCancel}>
-                  Cancel
-                </button>
-                <button type="submit" className="primary-btn">
-                  {pinAction === "balance" ? "Unlock Balance" : "Unlock & Vote"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* ── Bottom Navigation ── */}
+      <nav className="bottom-nav">
+        <button
+          type="button"
+          className={`nav-tab ${activeTab === "vote" ? "active" : ""}`}
+          onClick={() => setActiveTab("vote")}
+        >
+          <span className="nav-icon">✓</span>
+          <span>Vote</span>
+        </button>
+        <button
+          type="button"
+          className={`nav-tab ${activeTab === "create" ? "active" : ""}`}
+          onClick={() => setActiveTab("create")}
+        >
+          <span className="nav-icon">+</span>
+          <span>Create</span>
+        </button>
+        <button
+          type="button"
+          className={`nav-tab ${activeTab === "activity" ? "active" : ""}`}
+          onClick={() => setActiveTab("activity")}
+        >
+          <span className="nav-icon">•</span>
+          <span>Activity</span>
+        </button>
+      </nav>
+
+      {/* ── Modals ── */}
+      {previewProposal ? (
+        <ProposalPreview
+          proposal={previewProposal}
+          onClose={() => setPreviewProposal(null)}
+          onVote={startVoteFlow}
+          currentVoter={currentVoter}
+        />
+      ) : null}
+
+      {registerCardId ? (
+        <RegisterModal
+          cardId={registerCardId}
+          onRegister={registerCard}
+          onCancel={() => { setRegisterCardId(null); setRegisterError(""); }}
+          loading={registerLoading}
+          error={registerError}
+        />
+      ) : null}
+
+      {pinModal ? (
+        <PinModal
+          action={pinModal.action}
+          onSubmit={handlePinSubmit}
+          onCancel={() => { setPinModal(null); setPinError(""); }}
+          error={pinError}
+        />
+      ) : null}
 
       {toast ? <div className="toast">{toast}</div> : null}
-
-      <footer className="footer-note">
-        <p>
-          Selected Proposal:{" "}
-          <strong>{pendingProposal?.title || "None selected"}</strong>
-        </p>
-      </footer>
     </div>
   );
 }

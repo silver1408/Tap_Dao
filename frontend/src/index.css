@@ -1,4 +1,8 @@
-/* Design tokens aligned with portfolio-itom (ITom) — paper corridor aesthetic */
+/* ═══════════════════════════════════════════════
+   TAP DAO — Mobile-First Design Tokens
+   Paper corridor aesthetic, optimized for phones
+   ═══════════════════════════════════════════════ */
+
 :root {
   --itom-bg: #fafafa;
   --itom-white: #ffffff;
@@ -24,37 +28,69 @@
   --field-border: var(--itom-charcoal);
   --focus-ring: rgba(26, 26, 26, 0.25);
   --accent-red: #b42318;
+  --accent-green: #16a34a;
   --sketch-radius: 2px 255px 3px 255px / 255px 5px 225px 3px;
+
+  /* Mobile nav */
+  --nav-height: 60px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
 body,
 #root {
   margin: 0;
-  min-height: 100%;
+  padding: 0;
+  min-height: 100dvh;
+  overscroll-behavior: none;
 }
 
 body {
   font-family: var(--font-main);
   color: var(--ink-main);
   background-color: var(--itom-bg);
-  background-image: linear-gradient(
-      rgba(250, 250, 250, 0.9),
-      rgba(250, 250, 250, 0.94)
-    ),
+  background-image: linear-gradient(rgba(250, 250, 250, 0.9),
+      rgba(250, 250, 250, 0.94)),
     var(--itom-paper-texture);
   background-size: auto, 480px 480px;
   background-attachment: fixed;
-  padding: 1rem;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
-  max-width: 1200px;
-  margin: 0 auto;
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Lucide Icon Alignment */
+.inline-icon {
+  vertical-align: middle;
+  margin-right: 6px;
+  position: relative;
+  top: -1px;
+}
+
+.icon-main {
+  color: var(--brand-teal);
+}
+
+.icon-sm {
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.icon-md {
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+.icon-xl {
+  color: var(--itom-muted-light);
+  margin-bottom: 12px;
 }
