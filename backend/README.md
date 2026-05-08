@@ -1,10 +1,10 @@
-# 🏛️ Off-Grid DAO — Community Voting Kiosk
+# Off-Grid DAO — Community Voting Kiosk
 
-A decentralized, local-first Ethereum voting kiosk built for hackathons. This repository allows communities to run a completely local Ethereum Virtual Machine (EVM) to track secure, sybil-resistant votes using physical NFC transit cards mapped to cryptographic private keys.
+A decentralized, local-first Ethereum voting kiosk. This repository allows communities to run a completely local Ethereum Virtual Machine (EVM) to track secure, sybil-resistant votes using physical NFC transit cards mapped to cryptographic private keys.
 
 ---
 
-## 🛠️ Architecture Overview
+## Architecture Overview
 *   **Blockchain**: Hardhat Local Node (EVM running entirely on `localhost:8545`)
 *   **Smart Contract**: `OffGridDAO.sol` (Single-choice voting, strictly prevents double-voting)
 *   **Backend / Bridge**: Node.js + Express (Wallet custodian mapping physical cards to private keys via Ethers.js)
@@ -12,7 +12,7 @@ A decentralized, local-first Ethereum voting kiosk built for hackathons. This re
 
 ---
 
-## 🚀 How to Run on Ubuntu Linux (For Your Teammates)
+## How to Run on Ubuntu Linux 
 
 If you are cloning this repository on Ubuntu, follow these exact steps to run the local blockchain and server. **Note:** Node.js projects do not use `requirements.txt` like Python. Instead, the `package.json` file handles all dependencies automatically!
 
@@ -63,8 +63,8 @@ This starts three services:
 Open **http://localhost:3001** after the stack finishes starting.
 
 ---
-
-## 📱 Setting up the iPhone NFC Shortcut
+## NFC Demonstration Workaround
+### Setting up the iPhone NFC Shortcut
 
 To use real physical NFC cards (like Metro cards) to trigger votes, you need to configure an iPhone automation. Because the phone is wireless, it cannot connect to `localhost`. It needs the **exact Local Wi-Fi IP Address** of the Ubuntu laptop running the server.
 
@@ -87,6 +87,6 @@ Open the **Shortcuts App** on iPhone:
    ```
 5. Uncheck "Ask before running" and hit Done!
 
-### 3. The Pitch!
-Now, open `http://localhost:3001` on the laptop. Click **+ Add Proposal**, create a project, and vote for it. When the screen says "Waiting for tap...", tap the Metro Card to your iPhone. The iPhone will ping the Ubuntu laptop over Wi-Fi, execute the secure Ethereum transaction, and visually confirm it on the big screen instantly! 🏆
+### 3. Running the application
+Now, open `http://localhost:3001` on the laptop. Click **+ Add Proposal**, create a project, and vote for it. When the screen says "Waiting for tap...", tap the Metro Card to your iPhone. The iPhone will ping the Ubuntu laptop over Wi-Fi, execute the secure Ethereum transaction, and visually confirm it on the  screen instantly! 
  http://192.168.1.15:3001/scan?cardId=Metro_Card_001
