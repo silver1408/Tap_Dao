@@ -367,11 +367,11 @@ Suggested production blueprint:
 
 ## 27) Screenshots / Demo Placeholders
 
-- `docs/assets/screenshots/dashboard.png`
-- `docs/assets/screenshots/proposal-preview.png`
-- `docs/assets/screenshots/nfc-flow.png`
-- `docs/assets/gifs/tapdao-demo.gif`
-- Demo video: `[INSERT_DEMO_VIDEO_URL_HERE]`
+- _(Placeholder path — create before release)_ `docs/assets/screenshots/dashboard.png`
+- _(Placeholder path — create before release)_ `docs/assets/screenshots/proposal-preview.png`
+- _(Placeholder path — create before release)_ `docs/assets/screenshots/nfc-flow.png`
+- _(Placeholder path — create before release)_ `docs/assets/gifs/tapdao-demo.gif`
+- Demo video: _(Placeholder — add public demo URL before release)_
 
 ## 28) Architecture Diagram Placeholders
 
