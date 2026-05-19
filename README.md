@@ -280,7 +280,7 @@ await contract.vote(1);
 ## 22) Installation Guide
 
 ### Prerequisites
-- Node.js (check compatibility with Hardhat + project lockfiles)
+- Node.js **20.x LTS** (recommended)
 - npm
 - Docker + Docker Compose (optional but recommended)
 
@@ -372,6 +372,11 @@ Suggested production blueprint:
 - _(Placeholder path — create before release)_ `docs/assets/screenshots/nfc-flow.png`
 - _(Placeholder path — create before release)_ `docs/assets/gifs/tapdao-demo.gif`
 - Demo video: _(Placeholder — add public demo URL before release)_
+
+Pre-release checklist:
+- [ ] Add screenshot assets to `docs/assets/screenshots/`
+- [ ] Add demo GIF to `docs/assets/gifs/`
+- [ ] Replace demo URL placeholder with a public link
 
 ## 28) Architecture Diagram Placeholders
 
