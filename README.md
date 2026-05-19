@@ -371,7 +371,7 @@ Suggested production blueprint:
 - `docs/assets/screenshots/proposal-preview.png`
 - `docs/assets/screenshots/nfc-flow.png`
 - `docs/assets/gifs/tapdao-demo.gif`
-- Demo video: `https://your-demo-link.example`
+- Demo video: `[INSERT_DEMO_VIDEO_URL_HERE]`
 
 ## 28) Architecture Diagram Placeholders
 
@@ -444,7 +444,7 @@ TapDAO explores a hybrid governance model where **physical identity rituals** an
 
 ## 35) Team
 
-> Add core team profiles here.
+> Replace the placeholder rows below with your actual team members before public release.
 
 | Name | Role | Focus |
 |---|---|---|
