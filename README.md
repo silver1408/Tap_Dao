@@ -377,6 +377,7 @@ Pre-release checklist:
 - [ ] Add screenshot assets to `docs/assets/screenshots/`
 - [ ] Add demo GIF to `docs/assets/gifs/`
 - [ ] Replace demo URL placeholder with a public link
+- [ ] Replace Team section placeholder rows with actual member details
 
 ## 28) Architecture Diagram Placeholders
 
