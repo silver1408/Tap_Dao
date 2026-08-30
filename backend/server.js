@@ -7,6 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const { ethers } = require("ethers");
 const crypto = require("crypto");
+const QRCode = require("qrcode");
 const {
   summarizeProposalProblem,
   generateProposalFromDescription,
@@ -17,6 +18,14 @@ const {
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Serve built frontend (from frontend/dist/) at root — this is the kiosk UI
+const frontendDistPath = path.join(__dirname, "..", "frontend", "dist");
+if (fs.existsSync(frontendDistPath)) {
+  app.use(express.static(frontendDistPath));
+}
+
+// Legacy static files (backend/public for uploads etc)
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
@@ -80,7 +89,7 @@ if (contractAddress) {
   daoContract = new ethers.Contract(contractAddress, contractAbi, provider);
 }
 
-// Admin signer (Hardhat Account #0) for creating proposals and allocating tokens
+// Admin signer (Hardhat Account #0) for creating proposals and funding wallets
 const ADMIN_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const adminSigner = new ethers.Wallet(ADMIN_KEY, provider);
@@ -92,12 +101,11 @@ if (daoContract) {
 // Transaction Feed history cache
 const transactionFeed = [];
 
-// Track which cards have been initialized with tokens
-const initializedCards = new Set();
+// ─────────────────────────────────────────────
+//  DYNAMIC VOTER REGISTRY (Any NFC card can register)
+// ─────────────────────────────────────────────
 
-// ─────────────────────────────────────────────
-//  VOTER REGISTRY (Mapped to Hardhat Private Keys)
-// ─────────────────────────────────────────────
+// Stateless PIN encryption
 function encryptPayload(text, pin) {
   const key = crypto.pbkdf2Sync(pin, "salt", 100000, 32, "sha256");
   const iv = crypto.randomBytes(12);
@@ -121,55 +129,42 @@ function decryptPayload(encryptedObj, pin) {
   return decrypted;
 }
 
-const voters = {
-  Metro_Card_001: {
-    name: "Vaibhav Gupta",
-    avatar: "👵",
-    privateKey:
-      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-    ward: "Sector 7, Green Park Colony",
-  },
-  Metro_Card_002: {
-    name: "OG Pratyush Mehra",
-    avatar: "👴",
-    privateKey:
-      "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-    ward: "Sector 12, Riverside",
-  },
-  Metro_Card_003: {
-    name: "Suryansh Mishra",
-    avatar: "👩",
-    privateKey:
-      "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
-    ward: "Sector 3, Market Road",
-  },
-};
+// Dynamic voters map: cardId → { name, avatar, wallet, encryptedPayload, ward }
+const voters = new Map();
 
-for (const cardId in voters) {
-  const wallet = new ethers.Wallet(voters[cardId].privateKey);
-  voters[cardId].wallet = wallet.address;
-  voters[cardId].encryptedPayload = encryptPayload(voters[cardId].privateKey, "1234");
-  delete voters[cardId].privateKey; // Wiped from memory
-}
+// Hardhat account index counter — we'll use accounts #1+ for voters
+// (Account #0 is admin)
+let nextAccountIndex = 1;
 
-const fallbackWallet = new ethers.Wallet(
+// Pre-defined Hardhat private keys (accounts #1 through #19)
+const HARDHAT_KEYS = [
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
   "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
-);
-const fallbackPayload = encryptPayload(fallbackWallet.privateKey, "1234");
+  "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+  "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
+  "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
+  "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+  "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+  "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
+  "0xf214f2b2cd398c806f84e317254e0f0b801d0643303237d97a22a48e01628897",
+  "0x701b615bbdfb9de65240bc28bd21bbc0d996645a3dd57e7b12bc2bdf6f192c82",
+  "0xa267530f49f8280200edf313ee7af6b827f2a8bce2897751d06a843f644967b1",
+  "0x47c99abed3324a2707c28affff1267e45918ec8c3f20b8aa892e8b065d2942dd",
+  "0xc526ee95bf44d8fc405a158bb884d9d1238d99f0612e9f33d006bb0789009aaa",
+  "0x8166f546bab6da521a8369cab06c5d2b9e46670292d85c875ee9ec20e84ffb61",
+  "0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0",
+  "0x689af8efa8c651a91ad287602527f3af2fe9f6501a7ac4b061667b5a93e037fd",
+  "0xde9be858da4a475276426320d5e9262ecfc3ba460bfac56360bfa6c4c28b4ee0",
+  "0xdf57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e",
+];
 
 function getVoter(cardId) {
-  if (voters[cardId]) {
-    return { cardId, ...voters[cardId] };
-  }
-  return {
-    cardId,
-    name: "Community Member",
-    avatar: "🧑",
-    encryptedPayload: fallbackPayload,
-    wallet: fallbackWallet.address,
-    ward: "Local Resident",
-  };
+  return voters.get(cardId) || null;
 }
+
+// Per-socket voter sessions
+const socketSessions = new Map(); // socketId → { cardId, voter }
 
 // Helper to read all proposals from blockchain
 async function readAllProposals() {
@@ -195,8 +190,6 @@ async function readAllProposals() {
   }
   return proposalsData;
 }
-
-let currentVoter = null;
 
 function ensureContractReady(res) {
   if (!daoContract || !adminContract || !contractAddress) {
@@ -279,13 +272,112 @@ app.get("/contract", (req, res) => {
   });
 });
 
+// Check if a card is registered
+app.get("/card/:cardId", (req, res) => {
+  const cardId = req.params.cardId;
+  const voter = getVoter(cardId);
+  if (voter) {
+    return sendEncrypted(res, 200, {
+      registered: true,
+      name: voter.name,
+      wallet: voter.wallet,
+      cardId,
+    });
+  }
+  return sendEncrypted(res, 200, { registered: false, cardId });
+});
+
+// Register a new NFC card
+app.post("/register", async (req, res) => {
+  if (!ensureContractReady(res)) return;
+  const data = readEncryptedBody(req);
+  if (!data) {
+    return sendEncrypted(res, 400, { error: "Invalid encrypted payload" });
+  }
+
+  const { cardId, name, pin } = data;
+  if (!cardId || !pin || pin.length < 4) {
+    return sendEncrypted(res, 400, {
+      error: "cardId and a 4-digit pin are required",
+    });
+  }
+
+  // Check if already registered
+  if (voters.has(cardId)) {
+    return sendEncrypted(res, 409, {
+      error: "This card is already registered",
+      voter: { name: voters.get(cardId).name, cardId },
+    });
+  }
+
+  // Get next Hardhat private key
+  if (nextAccountIndex > HARDHAT_KEYS.length) {
+    return sendEncrypted(res, 500, {
+      error: "No more wallet slots available (max 19 voters)",
+    });
+  }
+
+  const privateKey = HARDHAT_KEYS[nextAccountIndex - 1];
+  nextAccountIndex++;
+
+  const wallet = new ethers.Wallet(privateKey, provider);
+  const voterName = name || `Voter ${cardId.slice(-4)}`;
+
+  // Encrypt private key with user's PIN
+  const encPayload = encryptPayload(privateKey, pin);
+
+  // Allocate tokens on-chain
+  try {
+    console.log(`🪙 Registering card "${cardId}" as "${voterName}" → ${wallet.address}`);
+    const alreadyInitialized = await daoContract.isInitialized(wallet.address);
+    if (!alreadyInitialized) {
+      const allocTx = await adminContract.allocateTokens(wallet.address, 1000);
+      await allocTx.wait();
+      console.log(`✅ 1000 tokens allocated to ${wallet.address}`);
+    }
+  } catch (e) {
+    console.error("Token allocation error:", e.reason || e.message);
+  }
+
+  // Store voter
+  const voterData = {
+    name: voterName,
+    avatar: "🧑",
+    wallet: wallet.address,
+    encryptedPayload: encPayload,
+    ward: "Community Member",
+    cardId,
+  };
+  voters.set(cardId, voterData);
+
+  console.log(`✅ Card registered: ${cardId} → ${voterName}`);
+
+  // Broadcast registration event
+  io.emit("voter-registered", {
+    cardId,
+    name: voterName,
+    wallet: wallet.address,
+  });
+
+  return sendEncrypted(res, 200, {
+    success: true,
+    voter: {
+      name: voterName,
+      wallet: wallet.address,
+      cardId,
+      encryptedPayload: encPayload,
+      tokenBalance: 1000,
+    },
+  });
+});
+
 // Get all proposals from the SMART CONTRACT
 app.get("/proposals", async (req, res) => {
   if (!ensureContractReady(res)) return;
   return sendEncrypted(res, 200, await readAllProposals());
 });
 
-// Create a new proposal (from admin panel)
+// Create a new proposal (costs 200 tokens: deducted from creator)
 app.post("/proposals", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const data = readEncryptedBody(req);
@@ -295,16 +387,33 @@ app.post("/proposals", async (req, res) => {
     });
   }
 
-  const { title, description, category, fundsRequested, imageUrl } = data;
+  const { title, description, category, fundsRequested, imageUrl, encryptedPayload, pin } = data;
   if (!title || !fundsRequested) {
     return sendEncrypted(res, 400, {
       error: "Missing title or fundsRequested",
     });
   }
 
+  if (!encryptedPayload || !pin) {
+    return sendEncrypted(res, 400, {
+      error: "Missing encryptedPayload or pin to authorize creation fee",
+    });
+  }
+
+  let decryptedPrivateKey;
   try {
-    console.log(`📝 Creating new proposal: "${title}"...`);
-    const tx = await adminContract.createProposal(
+    decryptedPrivateKey = decryptPayload(encryptedPayload, pin);
+  } catch (e) {
+    console.error("❌ Proposal creation failed: Wrong PIN!");
+    return sendEncrypted(res, 401, { error: "Incorrect PIN. Vault failed to open." });
+  }
+
+  const signer = new ethers.Wallet(decryptedPrivateKey, provider);
+  const connectedContract = daoContract.connect(signer);
+
+  try {
+    console.log(`📝 Creating new proposal using signer ${signer.address}...`);
+    const tx = await connectedContract.createProposal(
       title,
       description || "",
       category || "General",
@@ -319,6 +428,36 @@ app.post("/proposals", async (req, res) => {
       proposalImages[newCount] = imageUrl;
     }
 
+    // Explicitly emit vote event for the creator (since they are now part of the 1 vote)
+    const p = await daoContract.getProposal(newCount);
+    const proposalObj = {
+      id: Number(p.id),
+      title: p.title,
+      description: p.description,
+      category: p.category,
+      fundsRequested: Number(p.fundsRequested),
+      votes: Number(p.votes),
+      imageUrl: proposalImages[Number(p.id)] || "",
+      status: p.active ? "active" : "inactive",
+    };
+
+    const txEntry = {
+      id: transactionFeed.length + 1,
+      type: "VOTE_CAST", // It acts as a vote
+      hash: tx.hash,
+      timestamp: new Date().toISOString(),
+    };
+    transactionFeed.push(txEntry);
+
+    const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
+
+    // Emit the vote-recorded so it pushes up to frontend instantly
+    io.emit("vote-recorded", {
+       voter: { name: "Creator", wallet: signer.address, tokenBalance: updatedBalance },
+       proposal: proposalObj,
+       transaction: txEntry,
+    });
+
     // Re-read all proposals and broadcast to all dashboards
     const allProposals = await readAllProposals();
     io.emit("proposals-updated", allProposals);
@@ -330,7 +469,7 @@ app.post("/proposals", async (req, res) => {
   } catch (e) {
     console.error("❌ Failed to create proposal:", e.reason || e.message);
     return sendEncrypted(res, 500, {
-      error: e.reason || "Failed to create proposal",
+      error: e.reason || "Failed to create proposal. Ensure you have 200 tokens and haven't voted.",
     });
   }
 });
@@ -403,30 +542,50 @@ app.post("/proposals/generate", async (req, res) => {
   }
 });
 
-// NFC Scan → Identify Voter + Check Token Balance
+// NFC Scan → Identify Voter (triggered by iOS Shortcut / Android NFC app)
+// Now supports per-socket sessions via optional socketId param
 app.get("/scan", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const cardId = req.query.cardId || "Unknown_Card";
+  const socketId = req.query.socketId || null;
   console.log(`\n📡 NFC SCAN DETECTED: ${cardId}`);
 
   const voter = getVoter(cardId);
-  currentVoter = voter;
 
-  // Allocate tokens on first scan if not already done
+  if (!voter) {
+    // Unknown card — tell frontend to show registration
+    console.log(`❓ Unknown card: ${cardId} — registration required`);
+
+    const payload = {
+      type: "unregistered",
+      cardId,
+    };
+
+    if (socketId && io.sockets.sockets.get(socketId)) {
+      io.to(socketId).emit("card-scanned", payload);
+    } else {
+      io.emit("card-scanned", payload);
+    }
+
+    return sendEncrypted(res, 200, {
+      success: true,
+      registered: false,
+      cardId,
+    });
+  }
+
+  // Known card — read balance and emit to connected clients
   let tokenBalance = 0;
   try {
     const alreadyInitialized = await daoContract.isInitialized(voter.wallet);
-    if (!alreadyInitialized && adminContract) {
-      console.log(
-        `🪙 First scan for ${cardId} — allocating 1000 tokens on-chain...`,
-      );
+    if (!alreadyInitialized) {
+      console.log(`🪙 Re-initializing tokens for ${voter.name} on new chain...`);
       const allocTx = await adminContract.allocateTokens(voter.wallet, 1000);
       await allocTx.wait();
     }
-    // Read balance from blockchain
     tokenBalance = Number(await daoContract.getTokenBalance(voter.wallet));
   } catch (e) {
-    console.error("Token allocation error:", e.reason || e.message);
+    console.error("Balance read error:", e.reason || e.message);
   }
 
   const txEntry = {
@@ -434,7 +593,7 @@ app.get("/scan", async (req, res) => {
     type: "IDENTITY_VERIFY",
     hash:
       "0x" +
-      require("crypto")
+      crypto
         .createHash("md5")
         .update("identity" + Date.now())
         .digest("hex")
@@ -443,8 +602,8 @@ app.get("/scan", async (req, res) => {
   };
   transactionFeed.push(txEntry);
 
-  // Broadcast to dashboard with token balance hidden initially
-  io.emit("card-scanned", {
+  const scanPayload = {
+    type: "registered",
     voter: {
       name: voter.name,
       avatar: voter.avatar,
@@ -455,10 +614,18 @@ app.get("/scan", async (req, res) => {
       encryptedPayload: voter.encryptedPayload,
     },
     transaction: txEntry,
-  });
+  };
+
+  // Emit to specific socket if provided, otherwise broadcast
+  if (socketId && io.sockets.sockets.get(socketId)) {
+    io.to(socketId).emit("card-scanned", scanPayload);
+  } else {
+    io.emit("card-scanned", scanPayload);
+  }
 
   return sendEncrypted(res, 200, {
     success: true,
+    registered: true,
     voter: voter.name,
     tokenBalance: null, // Hidden
   });
@@ -469,6 +636,9 @@ app.get("/balance", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const cardId = req.query.cardId || "Unknown_Card";
   const voter = getVoter(cardId);
+  if (!voter) {
+    return sendEncrypted(res, 404, { error: "Card not registered" });
+  }
   try {
     const balance = Number(await daoContract.getTokenBalance(voter.wallet));
     return sendEncrypted(res, 200, {
@@ -554,7 +724,7 @@ app.post("/vote", async (req, res) => {
       `⛏️  TX Mined! BlockNumber: ${receipt.blockNumber}, Gas Used: ${receipt.gasUsed.toString()}`,
     );
 
-    // Explicitly fetch and emit to guarantee dashboard updates (bypasses Hardhat event listener bugs)
+    // Explicitly fetch and emit to guarantee dashboard updates
     const p = await daoContract.getProposal(proposalId);
     const proposalObj = {
       id: Number(p.id),
@@ -578,7 +748,7 @@ app.post("/vote", async (req, res) => {
     const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
 
     io.emit("vote-recorded", {
-      voter: currentVoter ? { ...currentVoter, tokenBalance: updatedBalance } : { name: "Voter", wallet: signer.address, tokenBalance: updatedBalance },
+      voter: { name: "Voter", wallet: signer.address, tokenBalance: updatedBalance },
       proposal: proposalObj,
       transaction: txEntry,
     });
@@ -596,13 +766,184 @@ app.post("/vote", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-//  BLOCKCHAIN EVENT LISTENERS (Removed: using inline emit for reliability)
+//  V2: TUNNEL INFO — Read cloudflared public URL
 // ─────────────────────────────────────────────
+
+const CLOUDFLARED_LOG = path.join(__dirname, "..", "cloudflared.log");
+let cachedTunnelUrl = null;
+
+function extractTunnelUrl() {
+  if (cachedTunnelUrl) return cachedTunnelUrl;
+  try {
+    if (!fs.existsSync(CLOUDFLARED_LOG)) return null;
+    const log = fs.readFileSync(CLOUDFLARED_LOG, "utf8");
+    const match = log.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+    if (match) {
+      cachedTunnelUrl = match[0];
+      console.log(`🌐 Cloudflare Tunnel detected: ${cachedTunnelUrl}`);
+    }
+    return cachedTunnelUrl || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Reset cached URL when the log file is deleted/recreated
+setInterval(() => {
+  if (cachedTunnelUrl && fs.existsSync(CLOUDFLARED_LOG)) {
+    const log = fs.readFileSync(CLOUDFLARED_LOG, "utf8");
+    if (!log.includes(cachedTunnelUrl)) cachedTunnelUrl = null;
+  } else if (cachedTunnelUrl && !fs.existsSync(CLOUDFLARED_LOG)) {
+    cachedTunnelUrl = null;
+  }
+}, 30000);
+
+app.get("/tunnel-info", (req, res) => {
+  const tunnelUrl = extractTunnelUrl();
+  // Get LAN IP
+  const nets = require("os").networkInterfaces();
+  let lanIp = "localhost";
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === "IPv4" && !net.internal) {
+        lanIp = net.address;
+        break;
+      }
+    }
+  }
+  return res.json({
+    tunnelUrl: tunnelUrl || null,
+    lanUrl: `http://${lanIp}:${port}`,
+    tunnelReady: !!tunnelUrl,
+  });
+});
+
 // ─────────────────────────────────────────────
-//  SOCKET.IO
+//  V2: INVITE CODES — Virtual NFC cards for remote users
+// ─────────────────────────────────────────────
+
+// In-memory invite store: code → { label, cardId, used, expiresAt, createdAt }
+const invites = new Map();
+
+function generateInviteCode() {
+  const part = () => crypto.randomBytes(2).toString("hex").toUpperCase();
+  return `TDAO-${part()}-${part()}`;
+}
+
+// Generate a new invite code (creates a virtual cardId)
+app.post("/invites/generate", (req, res) => {
+  const body = req.body || {};
+  const label = (body.label || "Remote Voter").slice(0, 64);
+  const code = generateInviteCode();
+  const cardId = `INVITE-${code}`;
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
+
+  invites.set(code, { label, cardId, used: false, expiresAt, createdAt: new Date().toISOString() });
+  console.log(`🎟️  Invite generated: ${code} → cardId: ${cardId}`);
+
+  const tunnelUrl = extractTunnelUrl();
+  const baseUrl = tunnelUrl || `http://localhost:${port}`;
+  const joinUrl = `${baseUrl}/?invite=${code}`;
+
+  return res.json({ code, cardId, label, joinUrl, expiresAt });
+});
+
+// Get QR code image for an invite code
+app.get("/invites/qr/:code", async (req, res) => {
+  const code = req.params.code;
+  const invite = invites.get(code);
+  if (!invite) return res.status(404).json({ error: "Invite not found" });
+
+  const tunnelUrl = extractTunnelUrl();
+  const baseUrl = tunnelUrl || `http://localhost:${port}`;
+  const joinUrl = `${baseUrl}/?invite=${code}`;
+
+  try {
+    const png = await QRCode.toBuffer(joinUrl, { width: 300, margin: 2 });
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-cache");
+    return res.send(png);
+  } catch (err) {
+    return res.status(500).json({ error: "QR generation failed" });
+  }
+});
+
+// List all active invites
+app.get("/invites", (req, res) => {
+  const list = [];
+  for (const [code, inv] of invites.entries()) {
+    list.push({ code, label: inv.label, used: inv.used, expiresAt: inv.expiresAt, createdAt: inv.createdAt });
+  }
+  return res.json(list);
+});
+
+// Redeem an invite code — triggers same flow as NFC card scan
+app.post("/invites/redeem", async (req, res) => {
+  const body = req.body || {};
+  const { code, socketId } = body;
+
+  if (!code) return res.status(400).json({ error: "Invite code required" });
+
+  const invite = invites.get(code);
+  if (!invite) return res.status(404).json({ error: "Invite code not found or expired" });
+  if (invite.used) return res.status(409).json({ error: "This invite has already been used" });
+
+  const now = new Date();
+  if (new Date(invite.expiresAt) < now) {
+    return res.status(410).json({ error: "Invite code has expired" });
+  }
+
+  // Treat the virtual cardId exactly like a physical NFC card scan
+  const { cardId } = invite;
+  const voter = getVoter(cardId);
+
+  if (!voter) {
+    // Not yet registered — show registration modal (same as unregistered NFC card)
+    const payload = { type: "unregistered", cardId };
+    if (socketId && io.sockets.sockets.get(socketId)) {
+      io.to(socketId).emit("card-scanned", payload);
+    } else {
+      io.emit("card-scanned", payload);
+    }
+    console.log(`🎟️  Invite ${code} redeemed (unregistered) → cardId: ${cardId}`);
+    return res.json({ success: true, registered: false, cardId });
+  }
+
+  // Already registered — emit voter session
+  invite.used = true;
+  let tokenBalance = 0;
+  try {
+    tokenBalance = Number(await daoContract.getTokenBalance(voter.wallet));
+  } catch (_) {}
+
+  const scanPayload = {
+    type: "registered",
+    voter: {
+      name: voter.name,
+      avatar: voter.avatar,
+      wallet: voter.wallet,
+      ward: voter.ward,
+      cardId: voter.cardId,
+      tokenBalance: null,
+      encryptedPayload: voter.encryptedPayload,
+    },
+  };
+
+  if (socketId && io.sockets.sockets.get(socketId)) {
+    io.to(socketId).emit("card-scanned", scanPayload);
+  } else {
+    io.emit("card-scanned", scanPayload);
+  }
+
+  console.log(`🎟️  Invite ${code} redeemed (registered) → voter: ${voter.name}`);
+  return res.json({ success: true, registered: true, voter: voter.name });
+});
+
+// ─────────────────────────────────────────────
+//  SOCKET.IO — Per-socket sessions
 // ─────────────────────────────────────────────
 io.on("connection", async (socket) => {
-  console.log("🔌 Dashboard connected:", socket.id);
+  console.log("🔌 Client connected:", socket.id);
 
   const proposalsData = await readAllProposals();
 
@@ -610,9 +951,23 @@ io.on("connection", async (socket) => {
     proposals: proposalsData,
     transactions: transactionFeed.slice(-20),
     treasury: { totalFunds: 500000, allocated: 0, currency: "DAO Tokens" },
-    currentVoter,
+    socketId: socket.id, // Send socketId so frontend can use it for NFC shortcut linking
+  });
+
+  socket.on("disconnect", () => {
+    console.log("🔌 Client disconnected:", socket.id);
+    socketSessions.delete(socket.id);
   });
 });
+
+// ─────────────────────────────────────────────
+//  SPA FALLBACK — serve index.html for client-side routing
+// ─────────────────────────────────────────────
+if (fs.existsSync(frontendDistPath)) {
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(frontendDistPath, "index.html"));
+  });
+}
 
 // ─────────────────────────────────────────────
 //  START SERVER
@@ -620,8 +975,22 @@ io.on("connection", async (socket) => {
 server.listen(port, "0.0.0.0", () => {
   console.log("");
   console.log("═══════════════════════════════════════════════");
-  console.log("   🏛️  OFF-GRID DAO — ACTUAL WEB3 INSTANCE");
+  console.log("   🏛️  TAP DAO — Mobile Kiosk Server");
   console.log("═══════════════════════════════════════════════");
-  console.log(`   Dashboard:  http://localhost:${port}`);
+  console.log(`   Local:   http://localhost:${port}`);
+
+  // Show LAN IP for kiosk phones
+  const nets = require("os").networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === "IPv4" && !net.internal) {
+        console.log(`   Network: http://${net.address}:${port}`);
+      }
+    }
+  }
+
+  console.log("═══════════════════════════════════════════════");
+  console.log(`   Registered cards: ${voters.size}`);
+  console.log(`   Contract: ${contractAddress || "Not deployed"}`);
   console.log("═══════════════════════════════════════════════");
 });

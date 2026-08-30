@@ -36,8 +36,14 @@ contract OffGridDAO {
     event VoteCast(address indexed voter, uint256 indexed proposalId, uint256 newVoteCount);
     event TokensAllocated(address indexed voter, uint256 amount);
 
-    // Create a new proposal (anyone can create)
+    // Create a new proposal (costs 200 tokens: 100 for creation fee, 100 for auto-vote)
     function createProposal(string memory _title, string memory _description, string memory _category, uint256 _fundsRequested) public {
+        require(!hasVotedGlobally[msg.sender], "You have already voted! You cannot create a proposal.");
+        require(tokenBalances[msg.sender] >= 200, "Insufficient tokens to create a proposal (costs 200)");
+
+        // Deduct tokens
+        tokenBalances[msg.sender] -= 200;
+        
         proposalCount++;
         proposals[proposalCount] = Proposal({
             id: proposalCount,
@@ -45,11 +51,15 @@ contract OffGridDAO {
             description: _description,
             category: _category,
             fundsRequested: _fundsRequested,
-            votes: 0,
+            votes: 1, // Start with 1 vote from the creator
             active: true
         });
         
+        // Lock the user's global vote
+        hasVotedGlobally[msg.sender] = true;
+
         emit ProposalCreated(proposalCount, _title, _fundsRequested);
+        emit VoteCast(msg.sender, proposalCount, 1);
     }
 
     // Allocate tokens to a voter (called by server on first card scan)

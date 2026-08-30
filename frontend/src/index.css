@@ -12,10 +12,10 @@
   --itom-muted-light: #888888;
   --itom-paper-texture: url("/textures/paper-texture.webp");
 
-  --font-main: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-hand: "Caveat", cursive;
+  --font-main: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+  --font-hand: var(--font-main);
   --font-display: "Gloria Hallelujah", cursive;
-  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   --paper: #f9f9f9;
   --ink-main: var(--itom-ink);

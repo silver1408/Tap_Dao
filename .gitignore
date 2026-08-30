@@ -1,0 +1,64 @@
+# ============================================================
+#  Tap DAO — Root .gitignore
+# ============================================================
+
+# ── Node / npm ───────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json        # keep package.json, ignore lock files (optional: remove this line to keep locks)
+
+# ── Environment / Secrets ────────────────────────────────────
+.env
+.env.*
+!.env.example            # always allow example env template
+
+# ── Cloudflare tunnel logs (contain ephemeral URLs, not secrets
+#    but no need to version them) ────────────────────────────
+cloudflared.log
+cloudflared2.log
+cloudflared_new.log
+cloudflare/cf-backend.log
+cloudflare/cf-frontend.log
+linux/logs/
+
+# ── Hardhat build artifacts ──────────────────────────────────
+backend/cache/
+backend/artifacts/
+backend/typechain-types/
+
+# ── Smart contract runtime state (regenerated on deploy) ────
+backend/runtime/
+backend/address.json
+
+# ── Experimental prototypes (node_modules / build output) ────
+experimental/**/node_modules/
+experimental/**/dist/
+experimental/**/.env
+
+# ── Frontend build output ────────────────────────────────────
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+
+# ── Uploads (user-generated content, not source code) ────────
+backend/uploads/
+
+# ── OS / Editor noise ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ── Zip / archives ───────────────────────────────────────────
+*.zip
+*.tar.gz
+*.rar
