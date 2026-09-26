@@ -1862,7 +1862,7 @@ function App() {
               <span className="badge-avatar">{currentVoter.avatar || "👤"}</span>
               <span>{currentVoter.name}</span>
               {currentVoter.tokenBalance != null ? (
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.72rem" }}>
+                <span className="identity-balance">
                   {currentVoter.tokenBalance}t
                 </span>
               ) : null}
@@ -1878,10 +1878,9 @@ function App() {
           {currentVoter && (
             <button 
               type="button" 
-              className="theme-btn" 
+              className="theme-btn logout-btn"
               onClick={handleLogout} 
               title="Sign Out" 
-              style={{ marginLeft: '4px' }}
             >
               <LogOut size={16} />
             </button>
@@ -1893,7 +1892,7 @@ function App() {
       {sessionSecondsLeft !== null && sessionSecondsLeft <= SESSION_WARNING_SECONDS && (
         <div className="session-warning">
           <span>⏱ Session expires in {sessionSecondsLeft}s</span>
-          <span style={{ fontSize: "0.75rem", opacity: 0.8 }}>
+          <span className="session-warning-detail">
             Keep tapping to stay signed in, or tap your card
           </span>
         </div>
@@ -1933,8 +1932,7 @@ function App() {
                 ) : (
                   <button
                     type="button"
-                    className="secondary-btn"
-                    style={{ fontSize: "0.75rem", padding: "0.4rem 0.6rem", minHeight: "auto" }}
+                    className="secondary-btn balance-btn"
                     onClick={() => { setPinError(""); setPinModal({ action: "balance" }); }}
                   >
                     Balance
@@ -1984,9 +1982,9 @@ function App() {
                   const rawPercent = (tokensReceived / fundsReq) * 100;
                   const percent = Math.min(rawPercent, 100).toFixed(1);
 
-                  let barColor = "#10B981";
-                  if (rawPercent < 33) barColor = "#EF4444";
-                  else if (rawPercent < 66) barColor = "#F59E0B";
+                  let barColor = "#13795B";
+                  if (rawPercent < 33) barColor = "#B42318";
+                  else if (rawPercent < 66) barColor = "#B7791F";
 
                   // Per proposal, never global: the server marks `hasVoted`
                   // for THIS wallet on THIS proposal id, and the local set
@@ -2218,12 +2216,12 @@ function App() {
                   </label>
 
                   {form.fiatBudget && Number(form.fiatBudget) > 0 ? (
-                    <div style={{ padding: "0.75rem", backgroundColor: "var(--itom-light)", borderRadius: "8px", margin: "1rem 0", borderLeft: "4px solid var(--primary-main)" }}>
-                      <strong style={{ display: "block", marginBottom: "0.25rem", color: "var(--itom-charcoal)" }}>Proposal Grade: {
+                    <div className="proposal-grade">
+                      <strong className="proposal-grade-title">Proposal Grade: {
                         Number(form.fiatBudget) > 100000 ? "A (10,000 Token Goal)" :
                           Number(form.fiatBudget) > 10000 ? "B (5,000 Token Goal)" : "C (1,000 Token Goal)"
                       }</strong>
-                      <p style={{ fontSize: "0.80rem", color: "green", margin: 0 }}>
+                      <p className="proposal-grade-note">
                         Submission requires 100 tokens (creation fee). Voting is a separate action.
                       </p>
                     </div>
@@ -2241,7 +2239,7 @@ function App() {
                     />
                   </label>
                   {form.imageFile ? (
-                    <p style={{ marginTop: 0, fontSize: "0.85rem", color: "var(--ink-muted)" }}>
+                    <p className="file-selection">
                       Selected: {form.imageFile.name}
                     </p>
                   ) : null}
@@ -2341,12 +2339,11 @@ function App() {
                         <span className="invite-url" title={inv.joinUrl}>{inv.joinUrl}</span>
                         <button
                           type="button"
-                          className="icon-btn"
+                          className="icon-btn invite-copy-btn"
                           onClick={() => copyToClipboard(inv.joinUrl, inv.code)}
-                          style={{ alignSelf: "flex-start" }}
                         >
                           {copiedUrl === inv.code ? <Check size={14} /> : <Link size={14} />}
-                          <span style={{ marginLeft: 4, fontSize: "0.75rem" }}>
+                          <span className="copy-label">
                             {copiedUrl === inv.code ? "Copied!" : "Copy link"}
                           </span>
                         </button>
@@ -2404,8 +2401,7 @@ function App() {
                   </div>
                   {transactions.length > 5 && (
                     <button
-                      className="secondary-btn btn-block"
-                      style={{ marginTop: '0.75rem' }}
+                      className="secondary-btn btn-block feed-toggle"
                       onClick={() => setIsFeedExpanded(!isFeedExpanded)}
                     >
                       {isFeedExpanded ? "Show Less" : `View All (${transactions.length})`}

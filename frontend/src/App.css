@@ -2220,7 +2220,10 @@ body {
 .nav-tab:focus-visible,
 .primary-btn:focus-visible,
 .secondary-btn:focus-visible,
-.icon-btn:focus-visible {
+.icon-btn:focus-visible,
+.proposal-card:focus-visible,
+.dashboard-proposal:focus-visible,
+.dashboard-show-all:focus-visible {
   outline: 3px solid rgba(19, 121, 91, 0.24);
   outline-offset: 2px;
 }
@@ -2296,6 +2299,18 @@ body {
 .nav-tab.active .nav-icon {
   color: var(--primary) !important;
   transform: none;
+}
+
+.status.online {
+  color: var(--primary);
+  border-color: rgba(19, 121, 91, 0.35);
+  background: rgba(19, 121, 91, 0.08);
+}
+
+.status.offline {
+  color: #b42318;
+  border-color: rgba(180, 35, 24, 0.3);
+  background: rgba(180, 35, 24, 0.06);
 }
 
 /* Inputs & Forms */
@@ -2460,6 +2475,85 @@ p, span, div {
 
 .connection-status .disconnected {
   color: #b42318;
+}
+
+.identity-balance {
+  margin-left: 0.15rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.session-warning-detail {
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+.balance-btn {
+  min-height: auto;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.proposal-grade {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid rgba(19, 121, 91, 0.2);
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  background: rgba(19, 121, 91, 0.05);
+}
+
+.proposal-grade-title {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--text);
+}
+
+.proposal-grade-note,
+.file-selection {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.file-selection {
+  margin-top: 0;
+  font-size: 0.85rem;
+}
+
+.invite-copy-btn {
+  align-self: flex-start;
+}
+
+.copy-label {
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.feed-toggle {
+  margin-top: 0.75rem;
+}
+
+.dashboard-proposal {
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.dashboard-proposal:hover {
+  border-color: var(--dashboard-accent-border);
+  box-shadow: 0 4px 14px rgba(23, 32, 42, 0.05);
+}
+
+.dashboard-proposal > div {
+  min-width: 0;
+}
+
+.dashboard-event > div {
+  min-width: 0;
+}
+
+.dashboard-event strong {
+  overflow-wrap: anywhere;
 }
 
 .feed-body {
@@ -2639,7 +2733,7 @@ p, span, div {
 .dashboard-shell .dashboard-section {
   border-color: var(--dashboard-border);
   background: var(--dashboard-surface);
-  border-radius: 14px;
+  border-radius: 12px;
 }
 
 .dashboard-shell .dashboard-stat span,
@@ -2748,6 +2842,10 @@ p, span, div {
 
 .dashboard-shell .dashboard-event-mark {
   background: var(--dashboard-accent);
+}
+
+.dashboard-shell .dashboard-event-mark.failed {
+  background: #b42318;
 }
 
 .dashboard-shell .status-pill {
