@@ -106,11 +106,14 @@ function createSessionManager(options) {
     return parts.join("; ");
   }
 
-  function issue(cardId) {
+  function issue(cardId, issueOptions = {}) {
     const id = crypto.randomBytes(32).toString("hex");
     const issuedAt = now();
+    const shouldSupersede =
+      issueOptions.supersedeOthers ?? supersedeOthers;
     const record = {
       cardId,
+      kind: issueOptions.kind || "mobile",
       // Public, per-session random id. It is *not* the cookie value: the cookie
       // stays HttpOnly and HMAC-signed, while this handle only lets a browser
       // prove which session it believes it holds (shared-kiosk isolation).
@@ -121,7 +124,7 @@ function createSessionManager(options) {
       absoluteExpiresAt: issuedAt + absoluteTtlMs,
     };
     store.mutate((state) => {
-      if (!supersedeOthers) {
+      if (!shouldSupersede) {
         state.sessions[id] = record;
       } else {
         // One shared kiosk, one active member: a new login immediately
@@ -198,6 +201,13 @@ function createSessionManager(options) {
     });
     if (claim.expiresAt <= now()) return null;
     return { cardId: claim.cardId };
+  }
+
+  function peekClaim(token) {
+    if (typeof token !== "string" || token.length < 16) return null;
+    const claim = store.getState().claims[hashClaim(token)];
+    if (!claim || claim.expiresAt <= now()) return null;
+    return { cardId: claim.cardId, expiresAt: claim.expiresAt };
   }
 
   function parseCookieValue(value) {
@@ -390,6 +400,7 @@ function createSessionManager(options) {
     isSuperseded,
     handleMatches,
     issueClaim,
+    peekClaim,
     consumeClaim,
     attach,
     clear,

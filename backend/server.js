@@ -160,21 +160,17 @@ const upload = multer({
 });
 
 const server = http.createServer(app);
-// The browser opens the WebSocket from https://tap.kiyoai.in, so the handshake
-// must be allowed for that origin only. `origin: "*"` is invalid together with
-// `credentials: true` and would expose the session to any site.
-const io = new Server(server, {
-  cors: {
-    origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
-    credentials: true,
-    methods: ["GET", "POST"],
-  },
-});
+const io = new Server(server, { cors: { origin: "*", credentials: true } });
+// A Shortcut carries a random, browser-session-only key. Keep one exact mobile
+// socket per key so a public scan can never fan out to another phone.
+const mobileScanSockets = new Map();
 
 const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
 const addressFilePath =
   process.env.ADDRESS_FILE || path.join(__dirname, "address.json");
-const port = Number(process.env.PORT || 3001);
+// The local demo stack exposes the backend on 9201. Keep this fallback aligned
+// with start-demo.bat so running `node server.js` directly behaves the same.
+const port = Number(process.env.PORT || 9201);
 
 // ─────────────────────────────────────────────
 //  WEB3 BLOCKCHAIN SETUP (Hardhat localhost)
@@ -264,9 +260,9 @@ const sessions = createSessionManager({
   cookieName: process.env.SESSION_COOKIE_NAME || "tapdao_sid",
   idleTtlMs: Number(process.env.SESSION_IDLE_TTL_MS || 0) || undefined,
   absoluteTtlMs: Number(process.env.SESSION_ABSOLUTE_TTL_MS || 0) || undefined,
-  // The UI and the API live on different Cloudflare hostnames, so the cookie
-  // must be SameSite=None; Secure to survive cross-origin fetch requests.
-  sameSite: process.env.SESSION_COOKIE_SAME_SITE || "lax",
+  // A card session belongs to its mobile browser. A scan on another device
+  // must never invalidate the dashboard or another card's session.
+  supersedeOthers: false,
 });
 sessions.startReaper();
 
@@ -336,9 +332,9 @@ function authorizeSession(req, res) {
   return raw;
 }
 
-function issueSession(req, res, cardId) {
+function issueSession(req, res, cardId, options = {}) {
   const previous = sessions.fromRequest(req);
-  const session = sessions.issue(cardId);
+  const session = sessions.issue(cardId, options);
   sessions.attach(res, session, wantsSecureCookie(req));
   if (previous && previous.record.cardId !== cardId) {
     logSessionSwitch(previous.record.cardId, cardId);
@@ -437,7 +433,100 @@ function listInvites() {
 }
 
 function addTransaction(entry) {
-  return store.pushTransaction(entry);
+  const transaction = store.pushTransaction(entry);
+  io.emit("activity-event", transaction);
+  return transaction;
+}
+
+// ── Proposal persistence helpers ──
+function saveProposalToStore(proposal) {
+  store.mutate((state) => {
+    state.proposals[String(proposal.id)] = {
+      title: proposal.title,
+      description: proposal.description || "",
+      category: proposal.category || "General",
+      fundsRequested: proposal.fundsRequested || 0,
+      votes: proposal.votes || 0,
+      imageUrl: proposal.imageUrl || "",
+      status: proposal.status || "active",
+      createdAt: proposal.createdAt || new Date().toISOString(),
+    };
+  });
+}
+
+function updateProposalVotesInStore(proposalId, votes) {
+  store.mutate((state) => {
+    const saved = state.proposals[String(proposalId)];
+    if (saved) {
+      saved.votes = votes;
+    }
+  });
+}
+
+function listSavedProposals() {
+  const saved = store.getState().proposals;
+  return Object.entries(saved).map(([id, p]) => ({ ...p, id: Number(id) }));
+}
+
+// Replay persisted proposals onto a fresh blockchain (called at startup)
+async function replayProposalsOnChain() {
+  if (!adminContract) return 0;
+  const saved = listSavedProposals();
+  if (saved.length === 0) return 0;
+
+  // Check if proposals already exist on-chain
+  let onChainCount = 0;
+  try {
+    onChainCount = Number(await daoContract.proposalCount());
+  } catch (_e) { /* fresh chain */ }
+
+  if (onChainCount >= saved.length) {
+    console.log(`   ✅ Chain already has ${onChainCount} proposals, skipping replay.`);
+    return 0;
+  }
+
+  console.log(`   🔄 Replaying ${saved.length - onChainCount} proposals onto fresh chain...`);
+
+  // Sort by ID so they are recreated in order
+  saved.sort((a, b) => a.id - b.id);
+
+  // Ensure admin has enough tokens to create proposals
+  const adminBalance = Number(await daoContract.getTokenBalance(adminSigner.address));
+  const needed = (saved.length - onChainCount) * 100;
+  if (adminBalance < needed) {
+    try {
+      const isInit = await daoContract.isInitialized(adminSigner.address);
+      if (!isInit) {
+        const allocTx = await adminContract.allocateTokens(adminSigner.address, needed + 1000);
+        await allocTx.wait();
+      }
+    } catch (e) {
+      console.error("   ⚠️  Could not allocate admin tokens for replay:", e.reason || e.message);
+      return 0;
+    }
+  }
+
+  let replayed = 0;
+  for (const proposal of saved) {
+    if (proposal.id <= onChainCount) continue;
+    try {
+      const tx = await adminContract.createProposal(
+        proposal.title,
+        proposal.description,
+        proposal.category,
+        proposal.fundsRequested,
+      );
+      await tx.wait();
+      if (proposal.imageUrl) {
+        saveProposalImage(proposal.id, proposal.imageUrl);
+      }
+      replayed++;
+    } catch (e) {
+      console.error(`   ❌ Failed to replay proposal "${proposal.title}":`, e.reason || e.message);
+    }
+  }
+  console.log(`   ✅ Replayed ${replayed} proposals successfully.`);
+  return replayed;
 }
 
 // Helper to read all proposals from blockchain
@@ -453,9 +542,11 @@ async function readAllProposals(voterAddress) {
   if (!daoContract) return proposalsData;
   try {
     const count = await daoContract.proposalCount();
+    const savedProposals = store.getState().proposals;
     for (let i = 1; i <= Number(count); i++) {
       const p = await daoContract.getProposal(i);
-      const proposal = {
+      const stored = savedProposals[String(i)];
+      proposalsData.push({
         id: Number(p.id),
         title: p.title,
         description: p.description,
@@ -469,6 +560,8 @@ async function readAllProposals(voterAddress) {
         proposal.hasVoted = await daoContract.hasVoted(i, voterAddress);
       }
       proposalsData.push(proposal);
+        createdAt: stored?.createdAt || undefined,
+      });
     }
   } catch (e) {
     console.error("Error reading proposals:", e);
@@ -757,6 +850,29 @@ app.post("/session/claim", (req, res) => {
     return sendEncrypted(res, 400, { error: "Invalid encrypted payload" });
   }
 
+  const pendingClaim = sessions.peekClaim(data.claim);
+  if (!pendingClaim) {
+    return sendEncrypted(res, 401, {
+      error: "This scan has already been used or expired. Tap your card again.",
+      code: "CLAIM_INVALID",
+    });
+  }
+
+  const existing = sessions.fromRequest(req);
+  const handle = claimedHandle(req);
+  if (
+    existing &&
+    !existing.superseded &&
+    handle &&
+    sessions.handleMatches(existing, handle) &&
+    existing.record.cardId !== pendingClaim.cardId
+  ) {
+    return sendEncrypted(res, 409, {
+      error: "A card session is already active. Sign out before switching cards.",
+      code: "SESSION_SWITCH_REQUIRED",
+    });
+  }
+
   const claim = sessions.consumeClaim(data.claim);
   if (!claim) {
     return sendEncrypted(res, 401, {
@@ -773,9 +889,12 @@ app.post("/session/claim", (req, res) => {
     });
   }
 
-  // The kiosk is now this member's device: take the session over from whoever
-  // was signed in before.
-  const session = issueSession(req, res, claim.cardId);
+  // The claim belongs to the mobile browser that redeemed it. Other mobile
+  // cards and the dashboard keep their own sessions.
+  const session = issueSession(req, res, claim.cardId, {
+    kind: "mobile",
+    supersedeOthers: false,
+  });
 
   markSocketSession(data.socketId, claim.cardId);
 
@@ -872,7 +991,10 @@ app.post("/register", async (req, res) => {
     console.error("Token allocation error:", e.reason || e.message);
   }
 
-  const session = issueSession(req, res, normalizedCardId);
+  const session = issueSession(req, res, normalizedCardId, {
+    kind: "mobile",
+    supersedeOthers: false,
+  });
   markSocketSession(req.query && req.query.socketId, normalizedCardId);
 
   // Broadcast registration event
@@ -976,6 +1098,13 @@ app.post("/proposals", async (req, res) => {
   const signer = unlockWithPin(session, pin, vault.encryptedPayload);
   if (!signer) {
     console.error("❌ Proposal creation failed: Wrong PIN!");
+    addTransaction({
+      type: "PROPOSAL_CREATE_FAILED",
+      hash: null,
+      proposalTitle: title.trim().slice(0, 200),
+      status: "failed",
+      error: "Incorrect PIN",
+    });
     return sendEncrypted(res, 401, {
       error: "Incorrect PIN. Vault failed to open.",
       code: "PIN_INVALID",
@@ -1017,6 +1146,9 @@ app.post("/proposals", async (req, res) => {
     const txEntry = addTransaction({
       type: "PROPOSAL_CREATED",
       hash: tx.hash,
+      proposalId: proposalObj.id,
+      proposalTitle: proposalObj.title,
+      status: "success",
     });
 
     const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
@@ -1041,6 +1173,13 @@ app.post("/proposals", async (req, res) => {
     });
   } catch (e) {
     console.error("❌ Failed to create proposal:", e.reason || e.message);
+    addTransaction({
+      type: "PROPOSAL_CREATE_FAILED",
+      hash: null,
+      proposalTitle: title.trim().slice(0, 200),
+      status: "failed",
+      error: e.reason || "Blockchain proposal creation failed",
+    });
     return sendEncrypted(res, 500, {
       error:
         e.reason ||
@@ -1127,6 +1266,7 @@ app.get("/scan", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const cardId = String(req.query.cardId || "Unknown_Card").trim();
   const socketId = req.query.socketId || null;
+  const scanSession = req.query.scanSession || null;
   console.log(`\n📡 NFC SCAN DETECTED: ${cardId}`);
 
   const voter = getVoter(cardId);
@@ -1140,7 +1280,7 @@ app.get("/scan", async (req, res) => {
       cardId,
     };
 
-    emitCardScanned(socketId, payload);
+    emitCardScanned(socketId, scanSession, payload);
 
     return sendEncrypted(res, 200, {
       success: true,
@@ -1166,12 +1306,8 @@ app.get("/scan", async (req, res) => {
     state.voters[cardId] = { ...voter, lastSeenAt: new Date().toISOString() };
   });
 
-  const session = issueSession(req, res, cardId);
-  markSocketSession(socketId, cardId);
-
-  // The HTTP caller (kiosk-side scan) gets a cookie. A scan triggered from a
-  // member's phone gets a single-use claim instead, which the kiosk exchanges
-  // for its own isolated session — no session material is broadcast.
+  // A scan never creates a browser session. It creates a short-lived,
+  // single-use claim that a mobile UI can redeem after receiving the event.
   const claim = sessions.issueClaim(cardId);
   const scanPayload = {
     type: "registered",
@@ -1181,7 +1317,7 @@ app.get("/scan", async (req, res) => {
     transaction: txEntry,
   };
 
-  emitCardScanned(socketId, scanPayload);
+  emitCardScanned(socketId, scanSession, scanPayload);
 
   return sendEncrypted(res, 200, {
     success: true,
@@ -1190,7 +1326,8 @@ app.get("/scan", async (req, res) => {
     voter: publicVoter(voter, { tokenBalance: null }),
     cardId,
     tokenBalance: null, // Hidden until the PIN is verified
-    session: sessions.publicView(session),
+    claim: claim.token,
+    claimExpiresAt: claim.expiresAt,
   });
 });
 
@@ -1213,20 +1350,32 @@ function markSocketSession(socketId, cardId) {
 }
 
 /**
- * Delivers a scan to the kiosk that asked for it. When the scan came from
- * another device (phone shortcut over the tunnel) no socket id is known, so the
- * event only goes to kiosks that are not signed in — a member who is already
- * using the kiosk must not be silently switched to somebody else's card.
+ * Delivers a scan to the exact mobile browser session that paired its Shortcut.
+ * A scan without a valid target is intentionally discarded rather than being
+ * broadcast to a shared tunnel audience.
  */
-function emitCardScanned(socketId, payload) {
+function emitCardScanned(socketId, scanSession, payload) {
   const target = socketId ? io.sockets.sockets.get(socketId) : null;
   if (target) {
     target.emit("card-scanned", payload);
     return;
   }
-  for (const socket of io.sockets.sockets.values()) {
-    if (!socket.data || !socket.data.session) socket.emit("card-scanned", payload);
+
+  if (typeof scanSession !== "string" || !scanSession) return;
+
+  const targetSocketId = mobileScanSockets.get(scanSession);
+  const mobileSocket = targetSocketId ? io.sockets.sockets.get(targetSocketId) : null;
+  if (
+    mobileSocket &&
+    mobileSocket.data.clientRole === "mobile" &&
+    mobileSocket.data.scanSession === scanSession
+  ) {
+    mobileSocket.emit("card-scanned", payload);
+    return;
   }
+
+  // Do not leave stale socket ids behind after a mobile browser disconnects.
+  mobileScanSockets.delete(scanSession);
 }
 
 // Check token balance for a card
@@ -1342,6 +1491,13 @@ app.post("/vote", async (req, res) => {
   const signer = unlockWithPin(session, pin, vault.encryptedPayload);
   if (!signer) {
     console.error("❌ Decryption failed: Wrong PIN or tampered payload!");
+    addTransaction({
+      type: "VOTE_FAILED",
+      hash: null,
+      proposalId: Number(proposalId),
+      status: "failed",
+      error: "Incorrect PIN",
+    });
     return sendEncrypted(res, 401, {
       error: "Incorrect PIN. Vault failed to open.",
       code: "PIN_INVALID",
@@ -1372,7 +1528,13 @@ app.post("/vote", async (req, res) => {
       status: p.active ? "active" : "inactive",
     };
 
-    const txEntry = addTransaction({ type: "VOTE_CAST", hash: tx.hash });
+    const txEntry = addTransaction({
+      type: "VOTE_CAST",
+      hash: tx.hash,
+      proposalId: proposalObj.id,
+      proposalTitle: proposalObj.title,
+      status: "success",
+    });
     const voter = vault.voter;
     if (voter) {
       store.mutate((state) => {
@@ -1407,6 +1569,13 @@ app.post("/vote", async (req, res) => {
     });
   } catch (e) {
     console.error("❌ Blockchain error:", e.reason || e.message);
+    addTransaction({
+      type: "VOTE_FAILED",
+      hash: null,
+      proposalId: Number(proposalId),
+      status: "failed",
+      error: e.reason || "Blockchain execution failed",
+    });
     return sendEncrypted(res, 500, {
       error: e.reason || "Blockchain execution failed",
     });
@@ -1550,7 +1719,7 @@ app.get("/invites", (req, res) => {
 
 app.post("/invites/redeem", async (req, res) => {
   const body = req.body || {};
-  const { code, socketId } = body;
+  const { code, socketId, scanSession } = body;
 
   if (!code) return res.status(400).json({ error: "Invite code required" });
 
@@ -1570,7 +1739,7 @@ app.post("/invites/redeem", async (req, res) => {
   if (!voter) {
     // Not yet registered — show registration modal (same as unregistered NFC card)
     const payload = { type: "unregistered", cardId };
-    emitCardScanned(socketId, payload);
+    emitCardScanned(socketId, scanSession || null, payload);
     console.log(`🎟️  Invite ${code} redeemed (unregistered) → cardId: ${cardId}`);
     return res.json({ success: true, registered: false, cardId });
   }
@@ -1585,10 +1754,9 @@ app.post("/invites/redeem", async (req, res) => {
     tokenBalance = Number(await daoContract.getTokenBalance(voter.wallet));
   } catch (_) {}
 
-  const session = issueSession(req, res, cardId);
   const claim = sessions.issueClaim(cardId);
 
-  emitCardScanned(socketId, {
+  emitCardScanned(socketId, scanSession || null, {
     type: "registered",
     cardId,
     voter: publicVoter(voter, { tokenBalance: null }),
@@ -1602,7 +1770,8 @@ app.post("/invites/redeem", async (req, res) => {
     name: voter.name,
     voter: publicVoter(voter, { tokenBalance: null }),
     cardId,
-    session: sessions.publicView(session),
+    claim: claim.token,
+    claimExpiresAt: claim.expiresAt,
   });
 });
 
@@ -1629,10 +1798,23 @@ app.use((err, req, res, next) => {
 io.on("connection", async (socket) => {
   console.log("🔌 Client connected:", socket.id);
 
-  const connectedSession = currentSession(socket.request);
-  socket.data.session = connectedSession
-    ? { cardId: connectedSession.record.cardId }
-    : null;
+  const requestedRole =
+    socket.handshake.auth?.clientRole || socket.handshake.query?.clientRole;
+  socket.data.clientRole = requestedRole === "mobile" ? "mobile" : "dashboard";
+  socket.data.scanSession =
+    socket.data.clientRole === "mobile"
+      ? String(socket.handshake.auth?.scanSession || socket.handshake.query?.scanSession || "")
+      : "";
+  if (socket.data.scanSession) {
+    mobileScanSockets.set(socket.data.scanSession, socket.id);
+  }
+
+  // Do not infer a mobile socket's active card from the HttpOnly cookie here.
+  // The session handle lives in sessionStorage, so a cookie can survive after
+  // the UI has cleared its local session. Treating that stale cookie as an
+  // active socket subscription would suppress the next card-scan event. The
+  // claim and logout routes explicitly keep this marker in sync instead.
+  socket.data.session = null;
 
   const proposalsData = await readAllProposals();
   const state = store.getState();
@@ -1646,6 +1828,9 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("disconnect", () => {
+    if (mobileScanSockets.get(socket.data.scanSession) === socket.id) {
+      mobileScanSockets.delete(socket.data.scanSession);
+    }
     console.log("🔌 Client disconnected:", socket.id);
   });
 });

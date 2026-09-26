@@ -29,6 +29,34 @@ const AI_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AI_TIMEOUT_MS || 10000
 const SESSION_TOUCH_INTERVAL_MS = 30000;
 const SESSION_WARNING_SECONDS = 60;
 
+function NavigationBreadcrumbs({ current }) {
+  const isDashboard = current === "dashboard";
+
+  return (
+    <nav className={`breadcrumbs breadcrumbs-${current}`} aria-label="Breadcrumb">
+      <span className="breadcrumbs-root">Tap DAO</span>
+      <span className="breadcrumbs-separator" aria-hidden="true">/</span>
+      {isDashboard ? (
+        <>
+          <span className="breadcrumbs-current" aria-current="page">
+            Governance Dashboard
+          </span>
+          <span className="breadcrumbs-separator" aria-hidden="true">/</span>
+          <a href="/mobile">Mobile voting</a>
+        </>
+      ) : (
+        <>
+          <a href="/dashboard">Governance Dashboard</a>
+          <span className="breadcrumbs-separator" aria-hidden="true">/</span>
+          <span className="breadcrumbs-current" aria-current="page">
+            Mobile voting
+          </span>
+        </>
+      )}
+    </nav>
+  );
+}
+
 // The session cookie is HttpOnly, so the browser also keeps a *public* handle
 // for the session it believes it holds. The server refuses to act on a session
 // whose handle does not match, which is what keeps two members sharing one
@@ -36,6 +64,21 @@ const SESSION_WARNING_SECONDS = 60;
 // refresh still restores the member, while a fresh visitor is never handed the
 // previous member's session.
 const SESSION_HANDLE_KEY = "tapdao.sessionHandle";
+const MOBILE_SCAN_SESSION_KEY = "tapdao.mobileScanSession";
+
+function readMobileScanSession() {
+  try {
+    const existing = window.sessionStorage.getItem(MOBILE_SCAN_SESSION_KEY);
+    if (existing) return existing;
+    const created =
+      window.crypto?.randomUUID?.() ||
+      `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    window.sessionStorage.setItem(MOBILE_SCAN_SESSION_KEY, created);
+    return created;
+  } catch {
+    return `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
 
 function readSessionHandle() {
   try {
@@ -306,7 +349,259 @@ function ProposalPreview({ proposal, imageUrl, onClose, onVote, currentVoter, ha
 //  MAIN APP
 // ═══════════════════════════════════════════════
 
+function DashboardView({
+  proposals,
+  transactions,
+  loading,
+  connected,
+  registeredVotersCount,
+  activeProposals,
+  totalVotes,
+  resolveMediaUrl,
+  appTheme,
+  themeIcons,
+  cycleTheme,
+}) {
+  const events = transactions;
+  const [expandedProposalId, setExpandedProposalId] = useState(null);
+  const eventLabel = (event) => {
+    if (event.type === "PROPOSAL_CREATED") {
+      return "New proposal: " + (event.proposalTitle || "Proposal #" + event.proposalId);
+    }
+    if (event.type === "PROPOSAL_CREATE_FAILED") {
+      return "Proposal creation failed: " + (event.proposalTitle || "Untitled proposal");
+    }
+    if (event.type === "VOTE_CAST") {
+      return "Vote recorded: " + (event.proposalTitle || "Proposal #" + event.proposalId);
+    }
+    if (event.type === "VOTE_FAILED") {
+      return "Vote failed: Proposal #" + (event.proposalId || "unknown");
+    }
+    if (event.type === "IDENTITY_VERIFY") return "Card tapped";
+    return event.type || "Activity";
+  };
+
+  const renderProposalCard = (proposal, isExpanded = false) => {
+    const tokensReceived = (proposal.votes || 0) * 100;
+    const fundsRequested = proposal.fundsRequested || 0;
+    const percent = fundsRequested
+      ? Math.min((tokensReceived / fundsRequested) * 100, 100).toFixed(1)
+      : "0.0";
+
+    return (
+      <article
+        className={`dashboard-proposal ${isExpanded ? "dashboard-proposal-expanded" : ""}`}
+        key={proposal.id}
+        onClick={
+          isExpanded
+            ? undefined
+            : () => setExpandedProposalId(proposal.id)
+        }
+        onKeyDown={
+          isExpanded
+            ? undefined
+            : (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setExpandedProposalId(proposal.id);
+                }
+              }
+        }
+        role={isExpanded ? undefined : "button"}
+        tabIndex={isExpanded ? undefined : 0}
+        aria-expanded={isExpanded}
+        aria-label={`${proposal.title}. ${isExpanded ? "Expanded proposal details" : "Expand proposal details"}.`}
+      >
+        {proposal.imageUrl ? (
+          <img
+            src={resolveMediaUrl(proposal.imageUrl)}
+            alt=""
+            className="dashboard-proposal-image"
+          />
+        ) : null}
+        <div className="dashboard-proposal-body">
+          <div className="dashboard-proposal-title">
+            <h3>{proposal.title}</h3>
+            <span className={proposal.status === "active" ? "status-pill active" : "status-pill"}>
+              {proposal.status}
+            </span>
+          </div>
+          <p className="dashboard-proposal-summary">
+            {proposal.description || "No description provided."}
+          </p>
+          <div className="dashboard-progress">
+            <span style={{ width: percent + "%" }} />
+          </div>
+          <div className="dashboard-proposal-meta">
+            <span>{proposal.category}</span>
+            <span>{proposal.votes || 0} votes</span>
+          </div>
+          {isExpanded ? (
+            <div className="dashboard-proposal-details">
+              <button
+                type="button"
+                className="dashboard-detail-close"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpandedProposalId(null);
+                }}
+                aria-label="Close proposal details"
+              >
+                Close details
+              </button>
+              <p>{proposal.description || "No description provided."}</p>
+              <dl className="dashboard-proposal-facts">
+                <div>
+                  <dt>Status</dt>
+                  <dd>{proposal.status || "Unknown"}</dd>
+                </div>
+                <div>
+                  <dt>Funding status</dt>
+                  <dd>{tokensReceived}/{fundsRequested} tokens ({percent}%)</dd>
+                </div>
+              </dl>
+            </div>
+          ) : null}
+        </div>
+      </article>
+    );
+  };
+
+  const expandedProposal = proposals.find((proposal) => proposal.id === expandedProposalId);
+  const remainingProposals = expandedProposal
+    ? proposals.filter((proposal) => proposal.id !== expandedProposal.id)
+    : [];
+
+  return (
+    <div className={`dashboard-shell theme-${appTheme}`}>
+      <header className="dashboard-header">
+        <div>
+          <NavigationBreadcrumbs current="dashboard" />
+          <h1>Governance Dashboard</h1>
+        </div>
+        <div className="dashboard-actions">
+          <button
+            type="button"
+            className="dashboard-theme-button"
+            onClick={cycleTheme}
+            title={`Theme: ${appTheme}`}
+            aria-label={`Theme: ${appTheme}. Click to change.`}
+          >
+            {themeIcons[appTheme]}
+          </button>
+          <span className={connected ? "dashboard-live live" : "dashboard-live"}>
+            <span className="dot" />
+            {connected ? "Live" : "Offline"}
+          </span>
+          <a className="dashboard-mobile-link" href="/mobile">
+            Mobile voting
+          </a>
+        </div>
+      </header>
+
+      <section className="dashboard-stats" aria-label="DAO summary">
+        <div className="dashboard-stat">
+          <span>Active proposals</span>
+          <strong>{activeProposals}</strong>
+        </div>
+        <div className="dashboard-stat">
+          <span>Total votes</span>
+          <strong>{totalVotes}</strong>
+        </div>
+        <div className="dashboard-stat">
+          <span>Registered cards</span>
+          <strong>{registeredVotersCount}</strong>
+        </div>
+      </section>
+
+      <main className="dashboard-grid">
+        <section className="dashboard-section">
+          <div className="dashboard-section-heading">
+            <div>
+              <p className="dashboard-kicker">On chain</p>
+              <h2>All proposals</h2>
+            </div>
+            {expandedProposal ? (
+              <button
+                type="button"
+                className="dashboard-show-all"
+                onClick={() => setExpandedProposalId(null)}
+              >
+                ← All proposals
+              </button>
+            ) : (
+              <span className="dashboard-count">{proposals.length}</span>
+            )}
+          </div>
+          {loading ? (
+            <div className="dashboard-empty">Loading proposals...</div>
+          ) : proposals.length === 0 ? (
+            <div className="dashboard-empty">No proposals have been created yet.</div>
+          ) : (
+            <>
+              <div className={`dashboard-proposals dashboard-proposals-desktop ${expandedProposal ? "has-expanded" : ""}`}>
+                {expandedProposal ? renderProposalCard(expandedProposal, true) : null}
+                {expandedProposal ? (
+                  <div className="dashboard-proposal-list">
+                    {remainingProposals.map((proposal) => renderProposalCard(proposal))}
+                  </div>
+                ) : (
+                  proposals.map((proposal) => renderProposalCard(proposal))
+                )}
+              </div>
+              <div className="dashboard-proposals dashboard-proposals-mobile">
+                {proposals.map((proposal) =>
+                  renderProposalCard(proposal, expandedProposalId === proposal.id),
+                )}
+              </div>
+            </>
+          )}
+        </section>
+
+        <aside className="dashboard-section dashboard-activity">
+          <div className="dashboard-section-heading">
+            <div>
+              <p className="dashboard-kicker">Live feed</p>
+              <h2>Activity</h2>
+            </div>
+            <span className="dashboard-count">{events.length}</span>
+          </div>
+          {events.length === 0 ? (
+            <div className="dashboard-empty">Waiting for proposal and vote activity.</div>
+          ) : (
+            <div className="dashboard-event-list">
+              {events.slice(0, 12).map((event) => (
+                <div className="dashboard-event" key={event.id + "-" + event.timestamp}>
+                  <span className={"dashboard-event-mark " + (event.status === "failed" ? "failed" : "success")} />
+                  <div>
+                    <strong>{eventLabel(event)}</strong>
+                    {event.error ? <small>{event.error}</small> : null}
+                    <time dateTime={event.timestamp}>
+                      {new Date(event.timestamp).toLocaleTimeString()}
+                    </time>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </aside>
+      </main>
+    </div>
+  );
+}
+
 function App() {
+  const [isMobileUi] = useState(
+    () => {
+      const isDashboardRoute = window.location.pathname === "/dashboard";
+      return (
+        !isDashboardRoute &&
+        (window.location.pathname === "/mobile" ||
+          window.matchMedia("(max-width: 767px)").matches)
+      );
+    },
+  );
+
   // ── Connection ──
   const [connected, setConnected] = useState(false);
   const [socketId, setSocketId] = useState(null);
@@ -334,7 +629,6 @@ function App() {
   };
 
   const [nfcScanning, setNfcScanning] = useState(false);
-  const [nfcSupported, setNfcSupported] = useState('NDEFReader' in window);
 
   // ── Registration ──
   const [registerCardId, setRegisterCardId] = useState(null);
@@ -385,7 +679,6 @@ function App() {
   };
 
   const [isFeedExpanded, setIsFeedExpanded] = useState(false);
-  const [showStatusMenu, setShowStatusMenu] = useState(false);
 
   // ── AI Preview ──
   const [aiPreview, setAiPreview] = useState(null);
@@ -393,7 +686,7 @@ function App() {
   const [aiElapsed, setAiElapsed] = useState(0);
 
   // ── Balance countdown ──
-  const [balanceSecondsLeft, setBalanceSecondsLeft] = useState(null);
+  const balanceCountdownValueRef = useRef(null);
 
   // ── Voted proposals tracking ──
   const [votedProposalIds, setVotedProposalIds] = useState(new Set());
@@ -409,7 +702,8 @@ function App() {
   // Bumped on every sign-in/sign-out so responses from a previous member can
   // never be applied to the member who is signed in now.
   const sessionEpochRef = useRef(0);
-  const pendingScanRef = useRef(null);
+  const handledClaimsRef = useRef(new Set());
+  const mobileScanSessionRef = useRef(isMobileUi ? readMobileScanSession() : "");
   const lastTouchRef = useRef(0);
   const onSessionLostRef = useRef(null);
   const aiElapsedRef = useRef(null);
@@ -441,7 +735,7 @@ function App() {
     setPinModal(null);
     setPinError("");
     setVotedProposalIds(new Set());
-    setBalanceSecondsLeft(null);
+    balanceCountdownValueRef.current = null;
     setAiPrompt("");
     setAiError("");
     setAiGenerating(false);
@@ -461,7 +755,6 @@ function App() {
       // Invalidate in-flight requests from the member who is leaving.
       sessionEpochRef.current += 1;
       sessionRef.current = null;
-      pendingScanRef.current = null;
       writeSessionHandle("");
       resetMemberState();
       setCurrentVoter(null);
@@ -757,7 +1050,6 @@ function App() {
         const sid = await waitForSocket();
         // Remember the scan so the matching socket event does not sign the
         // member in twice (this browser already gets its own cookie back).
-        pendingScanRef.current = { cardId, at: Date.now() };
         const data = await apiGet(
           `/scan?cardId=${encodeURIComponent(cardId)}&socketId=${encodeURIComponent(sid)}`,
         );
@@ -781,8 +1073,9 @@ function App() {
         const data = await apiPost("/register", { cardId, name, pin });
         setRegisterCardId(null);
         applySession({ ...data.voter, cardId }, data.session);
-        setIntendedAction("read");
-        setActiveTab("vote");
+        const nextAction = intendedAction === "write" ? "write" : "read";
+        setIntendedAction(nextAction);
+        setActiveTab(nextAction === "write" ? "create" : "vote");
         notify(`Welcome, ${data.voter.name}! Card registered with 1000 tokens.`);
       } catch (error) {
         setRegisterError(error.message);
@@ -790,7 +1083,7 @@ function App() {
         setRegisterLoading(false);
       }
     },
-    [apiPost, applySession, notify],
+    [apiPost, applySession, intendedAction, notify],
   );
 
   // ── Cast Vote ──
@@ -844,17 +1137,16 @@ function App() {
         setCurrentVoter((prev) => ({ ...prev, tokenBalance: data.tokenBalance }));
         setPinModal(null);
         // Balance countdown: 10s then auto-hide
-        setBalanceSecondsLeft(10);
+        balanceCountdownValueRef.current = 10;
         if (balanceCountdownRef.current) clearInterval(balanceCountdownRef.current);
         balanceCountdownRef.current = setInterval(() => {
-          setBalanceSecondsLeft((s) => {
-            if (s <= 1) {
-              clearInterval(balanceCountdownRef.current);
-              setCurrentVoter((prev) => prev ? { ...prev, tokenBalance: null } : prev);
-              return null;
-            }
-            return s - 1;
-          });
+          const seconds = balanceCountdownValueRef.current;
+          balanceCountdownValueRef.current = seconds <= 1 ? null : seconds - 1;
+          if (seconds <= 1) {
+            clearInterval(balanceCountdownRef.current);
+            setCurrentVoter((prev) => prev ? { ...prev, tokenBalance: null } : prev);
+            return;
+          }
         }, 1000);
       } catch (error) {
         if (error.code === "SESSION_EXPIRED") {
@@ -1011,12 +1303,59 @@ function App() {
     [pinModal, checkBalance, castVote, executeCreateProposal],
   );
 
+  const claimScan = useCallback(
+    async (payload, socketId) => {
+      if (!isMobileUi || !payload?.claim) return;
+      const activeCardId = sessionRef.current?.voter?.cardId;
+      if (activeCardId) {
+        if (activeCardId !== payload.cardId) {
+          notify("A card session is already active. Sign out before switching cards.");
+        }
+        return;
+      }
+      if (handledClaimsRef.current.has(payload.claim)) return;
+      handledClaimsRef.current.add(payload.claim);
+      try {
+        const data = await apiPost("/session/claim", {
+          claim: payload.claim,
+          socketId: socketId || null,
+        });
+        if (data && data.voter) {
+          signIn(data.voter, data.session);
+          const nextAction = intendedAction === "write" ? "write" : "read";
+          setIntendedAction(nextAction);
+          setActiveTab(nextAction === "write" ? "create" : "vote");
+          if (payload.transaction) {
+            setTransactions((prev) => {
+              if (prev.some((entry) => entry.id === payload.transaction.id)) return prev;
+              return [payload.transaction, ...prev].slice(0, 20);
+            });
+          }
+        }
+      } catch (error) {
+        handledClaimsRef.current.delete(payload.claim);
+        if (error?.code === "CLAIM_INVALID") {
+          notify("That scan expired - tap your card again.");
+        } else if (error?.code === "SESSION_SWITCH_REQUIRED") {
+          notify("Sign out before switching to another card.");
+        } else {
+          console.error("Claim exchange failed:", error);
+        }
+      }
+    },
+    [apiPost, intendedAction, isMobileUi, notify, signIn],
+  );
+
   // ── Socket.IO Setup ──
   useEffect(() => {
     const socket = io(SOCKET_BASE, {
       path: "/socket.io",
       transports: ["websocket", "polling"],
       withCredentials: true,
+      auth: {
+        clientRole: isMobileUi ? "mobile" : "dashboard",
+        scanSession: isMobileUi ? mobileScanSessionRef.current : "",
+      },
     });
     socketRef.current = socket;
 
@@ -1028,7 +1367,7 @@ function App() {
 
     socket.on("init", (payload) => {
       setProposals(payload.proposals || []);
-      setTransactions(payload.transactions || []);
+      setTransactions((payload.transactions || []).slice().reverse());
       setSocketId(payload.socketId || socket.id);
       if (payload.registeredVoters !== undefined) {
         setRegisteredVotersCount(payload.registeredVoters);
@@ -1040,47 +1379,27 @@ function App() {
       setProposals((prev) => mergeProposals(payload, prev));
     });
 
+    socket.on("activity-event", (payload) => {
+      if (!payload) return;
+      setTransactions((prev) => {
+        if (prev.some((entry) => entry.id === payload.id)) return prev;
+        return [payload, ...prev].slice(0, 20);
+      });
+    });
+
     socket.on("card-scanned", (payload) => {
       if (!payload) return;
+      if (!isMobileUi) return;
       if (payload.type === "unregistered") {
         setRegisterCardId(payload.cardId);
         return;
       }
 
-      const finishScan = (voter, session) => {
-        if (!voter) return;
-        signIn(voter, session);
-        setIntendedAction("read"); // skip the "where to?" gate
-        if (payload.transaction) {
-          setTransactions((prev) => [payload.transaction, ...prev].slice(0, 20));
-        }
-      };
-
       // This browser triggered the scan itself, so it already received a
       // session cookie from the HTTP response.
-      const pending = pendingScanRef.current;
-      if (pending && pending.cardId === payload.cardId && Date.now() - pending.at < 8000) {
-        pendingScanRef.current = null;
-        return;
-      }
-
       // A scan triggered from the member's phone: the phone got the cookie, not
       // this kiosk, so the claim is exchanged for a session of its own.
-      if (!payload.claim) return;
-      apiPost("/session/claim", {
-        claim: payload.claim,
-        socketId: socket.id || null,
-      })
-        .then((data) => {
-          if (data && data.voter) finishScan(data.voter, data.session);
-        })
-        .catch((error) => {
-          if (error && error.code === "CLAIM_INVALID") {
-            notify("That scan expired — tap your card again.");
-            return;
-          }
-          console.error("Claim exchange failed:", error);
-        });
+      claimScan(payload, socket.id);
     });
 
     socket.on("proposal-created", (payload) => {
@@ -1178,9 +1497,8 @@ function App() {
           });
 
           const sid = socket.id || "";
-          pendingScanRef.current = { cardId: cardFromUrl, at: Date.now() };
           const data = await apiGet(
-            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}`,
+            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`,
           );
 
           // Clean URL after scan
@@ -1190,12 +1508,7 @@ function App() {
             // Unregistered card — show registration modal
             setRegisterCardId(data.cardId || cardFromUrl);
           } else if (data.registered === true) {
-            if (data.voter && data.session) {
-              signIn(data.voter, data.session);
-              setIntendedAction((prev) => prev || "read");
-            } else if (!sessionRef.current) {
-              await restoreSession();
-            }
+            await claimScan(data, sid);
           }
         } catch (error) {
           console.error("Scan error:", error);
@@ -1214,23 +1527,21 @@ function App() {
         const res = await fetch(`${API_BASE}/tunnel-info`, { credentials: "include" });
         const data = await res.json();
         setTunnelInfo(data);
-        return data;
       } catch {
-        return null;
+        return;
       }
     };
-    let tunnelPoll = null;
-    fetchTunnelInfo().then((data) => {
-      if (data && !data.tunnelReady) {
-        tunnelPoll = setInterval(async () => {
-          const next = await fetchTunnelInfo();
-          if (next && next.tunnelReady && tunnelPoll) {
-            clearInterval(tunnelPoll);
-            tunnelPoll = null;
-          }
-        }, 5000);
+    fetchTunnelInfo();
+    const tunnelPoll = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/tunnel-info`, { credentials: "include" });
+        const data = await res.json();
+        setTunnelInfo(data);
+        if (data.tunnelReady) clearInterval(tunnelPoll);
+      } catch {
+        return;
       }
-    });
+    }, 5000);
 
     // Fetch proposals
     apiGet("/proposals")
@@ -1239,10 +1550,8 @@ function App() {
       .finally(() => setLoading(false));
 
     // Restore the httpOnly session and probe the AI provider on mount.
-    /* eslint-disable react-hooks/set-state-in-effect */
-    restoreSession();
+    if (isMobileUi) restoreSession();
     checkAiStatus();
-    /* eslint-enable react-hooks/set-state-in-effect */
 
     return () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -1302,7 +1611,6 @@ function App() {
       window.addEventListener(name, onActivity, { passive: true }),
     );
     const heartbeat = setInterval(touchSession, SESSION_TOUCH_INTERVAL_MS);
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- renews the sliding window after the first paint
     touchSession();
 
     if (sessionCountdownRef.current) clearInterval(sessionCountdownRef.current);
@@ -1385,12 +1693,33 @@ function App() {
     });
   };
 
+  const mobileShortcutUrl = `${window.location.origin}/scan?cardId=YOUR_CARD_ID&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`;
+
   // ═══ RENDER ═══
 
   // ─── GATE: Entry / Welcome ───
+  if (!isMobileUi) {
+    return (
+      <DashboardView
+        proposals={proposals}
+        transactions={transactions}
+        loading={loading}
+        connected={connected}
+        registeredVotersCount={registeredVotersCount}
+        activeProposals={activeProposals}
+        totalVotes={totalVotes}
+        resolveMediaUrl={resolveMediaUrl}
+        appTheme={appTheme}
+        themeIcons={themeIcons}
+        cycleTheme={cycleTheme}
+      />
+    );
+  }
+
   if (!intendedAction && !currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <NavigationBreadcrumbs current="mobile" />
         <div className="panel gate-panel">
           <h2>Welcome to Tap DAO</h2>
           <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
@@ -1414,6 +1743,7 @@ function App() {
   if (!intendedAction && currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <NavigationBreadcrumbs current="mobile" />
         <div className="panel gate-panel">
           <h2>Welcome Back, {currentVoter.name}!</h2>
           <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
@@ -1437,6 +1767,7 @@ function App() {
   if (intendedAction && !currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <NavigationBreadcrumbs current="mobile" />
         <div className="panel gate-panel" style={{ position: "relative" }}>
           <button
             className="secondary-btn"
@@ -1477,6 +1808,18 @@ function App() {
               Submit
             </button>
           </div>
+          <button
+            type="button"
+            className="secondary-btn btn-block"
+            style={{ marginTop: "1rem" }}
+            onClick={() => copyToClipboard(mobileShortcutUrl, "mobile-scan")}
+          >
+            {copiedUrl === "mobile-scan" ? <Check size={16} /> : <Copy size={16} />}
+            {copiedUrl === "mobile-scan" ? "Device ID Copied" : "Copy Device ID"}
+          </button>
+          <p style={{ margin: "0.7rem 0 0", fontSize: "0.75rem", color: "var(--ink-muted)" }}>
+            Replace YOUR_CARD_ID in the copied URL. Copy it on the phone that will tap the card; it only reaches this mobile session.
+          </p>
         </div>
 
         {registerCardId ? (
@@ -1498,7 +1841,10 @@ function App() {
     <div className={`app-shell theme-${appTheme}`}>
       {/* ── Top Bar ── */}
       <header className="topbar">
-        <h1>Tap DAO</h1>
+        <div className="topbar-brand">
+          <h1>Tap DAO</h1>
+          <NavigationBreadcrumbs current="mobile" />
+        </div>
         <div className="topbar-right">
           <div className="theme-toggles">
             <button type="button" className="theme-btn active" onClick={cycleTheme} title={`Theme: ${appTheme}`}>
@@ -1527,6 +1873,9 @@ function App() {
             <span className="dot" />
             <span>{connected ? "Live" : "Off"}</span>
           </div>
+          <a className="mobile-dashboard-link" href="/dashboard">
+            Governance
+          </a>
           {currentVoter && (
             <button 
               type="button" 
@@ -2018,6 +2367,7 @@ function App() {
                     {transactions.slice(0, isFeedExpanded ? transactions.length : 5).map((tx) => {
                       const isVote = tx.type === "VOTE_CAST";
                       const isProposal = tx.type === "PROPOSAL_CREATED";
+                      const isFailure = tx.status === "failed";
                       const timeAgo = (() => {
                         const diff = Math.floor((Date.now() - new Date(tx.timestamp).getTime()) / 1000);
                         if (diff < 60) return `${diff}s ago`;
@@ -2026,7 +2376,7 @@ function App() {
                       })();
                       return (
                         <div key={`${tx.hash}-${tx.id}`} className="feed-row">
-                          <span className="feed-icon">{isVote ? "\uD83D\uDDF3\uFE0F" : isProposal ? "\uD83D\uDCDD" : "\uD83C\uDD94"}</span>
+                          <span className="feed-icon">{isFailure ? "!" : isVote ? "\uD83D\uDDF3\uFE0F" : "\uD83C\uDD94"}</span>
                           <div className="feed-body">
                             <span className="feed-label">
                               {isVote

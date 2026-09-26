@@ -6,7 +6,7 @@ import ProposalPreviewModal from "./components/ProposalPreviewModal";
 import { requestProposalProblemSummary } from "./services/proposalSummaryService";
 
 const API_BASE = (
-  import.meta.env.VITE_API_URL || "http://localhost:3001"
+  import.meta.env.VITE_API_URL || "http://localhost:9201"
 ).replace(/\/$/, "");
 const SOCKET_BASE = import.meta.env.VITE_SOCKET_URL || API_BASE || undefined;
 

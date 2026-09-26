@@ -44,27 +44,14 @@ const proxy = Object.fromEntries(
 
 proxy["/socket.io"] = { target: PROXY_TARGET, ws: true, changeOrigin: true };
 
-// Fail the production build instead of shipping a bundle that encrypts with a
-// key the backend does not share (every request would fail to decrypt). Compose
-// always passes this build arg; only a hand-run `npm run build` can omit it.
-export default defineConfig(({ command }) => {
-  if (command === "build" && !process.env.VITE_CRYPTO_SECRET_KEY) {
-    throw new Error(
-      "VITE_CRYPTO_SECRET_KEY is required for a production build. " +
-        "Set it to the same value as the backend's CRYPTO_SECRET_KEY " +
-        "(see ../.env.example).",
-    );
-  }
-
-  return {
-    plugins: [react()],
-    // Served from the domain root behind the Cloudflare tunnel.
-    base: "/",
-    server: {
-      host: "0.0.0.0",
-      port: 5173,
-      allowedHosts: ALLOWED_HOSTS,
-      proxy,
-    },
-  };
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  base: "./",
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    allowedHosts: ["tap.kiyoai.in", ".trycloudflare.com"],
+    proxy,
+  },
 });

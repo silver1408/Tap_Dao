@@ -85,7 +85,7 @@ sleep 2
 # ── Step 6: Cloudflare Tunnel → Backend ─────────────────────
 echo "[6/7] Starting Cloudflare Tunnel for Backend (port 3001)..."
 rm -f "$LOG_DIR/cf-backend.log"
-nohup cloudflared tunnel --url http://localhost:3001 \
+nohup cloudflared tunnel --url http://localhost:9201 \
   > "$LOG_DIR/cf-backend.log" 2>&1 &
 echo $! > "$LOG_DIR/cf-backend.pid"
 echo "      PID $(cat "$LOG_DIR/cf-backend.pid") — log: linux/logs/cf-backend.log"
@@ -115,7 +115,7 @@ echo "  LOCAL URLS"
 echo "  ----------"
 echo "  Frontend:    http://localhost:5173"
 echo "  Watch UI:    http://localhost:4000"
-echo "  Backend:     http://localhost:3001"
+echo "  Backend:     http://localhost:9201"
 echo "  Blockchain:  http://localhost:8545"
 echo ""
 echo "  CLOUDFLARE PUBLIC URLS"

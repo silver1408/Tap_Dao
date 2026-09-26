@@ -48,6 +48,7 @@ node server.js
 The API is now listening on **9200** (see `PORT` in `backend/.env.example`). In the
 production topology it is reached through the tunnel as
 **https://tap-back.kiyoai.in**, and the UI at **https://tap.kiyoai.in**.
+Your dashboard is now live! Open your browser to **http://localhost:9201**
 
 ---
 
@@ -68,6 +69,7 @@ The API is then public at **https://tap-back.kiyoai.in** and the UI at
 **https://tap.kiyoai.in**. Configuration comes from the root `.env`
 (see `../.env.example`); `docker/docker-compose.yml` here is the backend-only
 variant.
+Open **http://localhost:9201** after the stack finishes starting.
 
 ---
 ## NFC Demonstration Workaround
@@ -102,3 +104,10 @@ Open the **Shortcuts App** on the iPhone:
 Open **https://tap.kiyoai.in**. When the screen says "Waiting for tap...", tap
 the Metro Card to the iPhone. The phone notifies the API over the tunnel, the
 kiosk signs the member in, and the vote is confirmed on screen instantly.
+   http://192.168.1.15:9201/scan?cardId=Metro_Card_001
+   ```
+5. Uncheck "Ask before running" and hit Done!
+
+### 3. Running the application
+Now, open `http://localhost:9201` on the laptop. Click **+ Add Proposal**, create a project, and vote for it. When the screen says "Waiting for tap...", tap the Metro Card to your iPhone. The iPhone will ping the Ubuntu laptop over Wi-Fi, execute the secure Ethereum transaction, and visually confirm it on the  screen instantly! 
+ http://192.168.1.15:9201/scan?cardId=Metro_Card_001

@@ -161,8 +161,13 @@ Primary contract: `backend/contracts/OffGridDAO.sol`
 
 ### Shared-kiosk session isolation
 
-The kiosk is expected to be handed from member to member, so a session is only
-ever valid for the member that actually claimed it:
+The desktop root is a dashboard and the mobile voter UI is available at /mobile.
+The dashboard has no card identity session: it shows every proposal and receives
+the global activity feed, including proposal creation and failed vote events. A
+card tap therefore cannot replace the dashboard's state.
+
+The mobile UI is card-session based, so a session is only ever valid for the
+member that actually claimed it:
 
 - The session cookie is signed, HttpOnly and `SameSite=Lax`; the server keeps
   the authoritative record (`backend/lib/sessionManager.js`).
@@ -171,18 +176,16 @@ ever valid for the member that actually claimed it:
   does not match the cookie's session is refused with `409
   SESSION_SUPERSEDED`, and a kiosk that has no handle is refused with `401
   SESSION_UNCLAIMED` — it never inherits whoever was signed in before.
-- A new sign-in supersedes the previous session for a short grace period (kept
-  only so the previous holder receives a clear "someone else signed in"
-  response), and every per-member UI state is reset on the kiosk.
+- Each mobile card claim creates its own session and does not supersede another
+  card's session. Within one mobile browser, a different card is ignored until
+  the current member signs out.
 - Logging out revokes the server session, clears the cookie and wipes the local
   handle plus drafts/balance/PIN state. A slow logout from a previous member can
   no longer revoke the member who replaced them.
-- Phone-triggered NFC scans (iOS Shortcut / Android NFC app) arrive at
-  `GET /scan` on a *different device*, so the kiosk browser never gets that
-  `Set-Cookie`. The server therefore emits a single-use **claim** (hashed at
-  rest, 90 s TTL) to the kiosk, which exchanges it at `POST /session/claim` for
-  its own isolated session. Scans without a known socket are only delivered to
-  kiosks that are not currently signed in. A claim proves *which card was
+- Phone-triggered NFC scans (iOS Shortcut / Android NFC app) create a single-use
+  **claim** (hashed at rest, 90 s TTL). The mobile UI exchanges it at
+  `POST /session/claim` for its own isolated session. Scans without a known
+  socket are delivered only to eligible mobile clients. A claim proves *which card was
   scanned* — it grants no vault or signing access, so the member's PIN is still
   required for balance, voting and proposal creation.
 - PIN brute-force counters are stored per **card**, not per session, so
@@ -353,6 +356,9 @@ places (or in `.env` alone) with your own:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # run twice
+```env
+VITE_API_URL=http://localhost:9201
+VITE_SOCKET_URL=http://localhost:9201
 ```
 
 The variables that define the public topology:
