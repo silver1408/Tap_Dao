@@ -35,13 +35,13 @@ popd
 echo.
 
 :: ── Step 3: Start backend server ────────────────────────────
-echo [3/7] Starting backend server (port 3001)...
+echo [3/7] Starting backend server (port 9200)...
 start "CF-Backend Server" cmd /k "cd /d "%ROOT%\backend" && node server.js"
 ping 127.0.0.1 -n 4 >nul
 
 :: ── Step 4: Start frontend ───────────────────────────────────
-echo [4/7] Starting frontend (port 5173)...
-start "CF-Frontend Dev" cmd /k "cd /d "%ROOT%\frontend" && npx vite --host 0.0.0.0 --port 5173"
+echo [4/7] Starting frontend (port 9100)...
+start "CF-Frontend Dev" cmd /k "cd /d "%ROOT%\frontend" && npx vite --host 0.0.0.0 --port 9100"
 ping 127.0.0.1 -n 4 >nul
 
 :: ── Step 5: Start Apple Watch UI ────────────────────────────
@@ -50,15 +50,15 @@ start "CF-Watch UI" cmd /k "cd /d "%ROOT%\frontend-watch" && node server.js"
 ping 127.0.0.1 -n 3 >nul
 
 :: ── Step 6: Cloudflare Tunnel → Backend ─────────────────────
-echo [6/7] Starting Cloudflare Tunnel for Backend (port 3001)...
+echo [6/7] Starting Cloudflare Tunnel for Backend (port 9200)...
 if exist "%CFDIR%cf-backend.log" del "%CFDIR%cf-backend.log"
-start "CF-Tunnel Backend" cmd /k "cloudflared tunnel --url http://localhost:3001 >> "%CFDIR%cf-backend.log" 2>&1"
+start "CF-Tunnel Backend" cmd /k "cloudflared tunnel --url http://localhost:9200 >> "%CFDIR%cf-backend.log" 2>&1"
 ping 127.0.0.1 -n 8 >nul
 
 :: ── Step 7: Cloudflare Tunnel → Frontend ────────────────────
-echo [7/7] Starting Cloudflare Tunnel for Frontend (port 5173)...
+echo [7/7] Starting Cloudflare Tunnel for Frontend (port 9100)...
 if exist "%CFDIR%cf-frontend.log" del "%CFDIR%cf-frontend.log"
-start "CF-Tunnel Frontend" cmd /k "cloudflared tunnel --url http://localhost:5173 >> "%CFDIR%cf-frontend.log" 2>&1"
+start "CF-Tunnel Frontend" cmd /k "cloudflared tunnel --url http://localhost:9100 >> "%CFDIR%cf-frontend.log" 2>&1"
 ping 127.0.0.1 -n 10 >nul
 
 :: ── Extract and print public URLs ───────────────────────────
@@ -82,9 +82,9 @@ echo   All services started!
 echo.
 echo   LOCAL URLS
 echo   ----------
-echo   Frontend:    http://localhost:5173
+echo   Frontend:    http://localhost:9100
 echo   Watch UI:    http://localhost:4000
-echo   Backend:     http://localhost:3001
+echo   Backend:     http://localhost:9200
 echo   Blockchain:  http://localhost:8545
 echo.
 echo   CLOUDFLARE PUBLIC URLS

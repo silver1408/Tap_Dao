@@ -8,4 +8,4 @@ RUN npm install
 COPY . .
 RUN npx hardhat compile
 
-EXPOSE 3001 8545
+EXPOSE 9200 8545

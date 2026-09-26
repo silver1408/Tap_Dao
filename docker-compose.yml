@@ -42,7 +42,7 @@ services:
       deploy:
         condition: service_completed_successfully
     environment:
-      PORT: 3001
+      PORT: 9200
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
     working_dir: /app
@@ -51,7 +51,7 @@ services:
       - backend-node-modules:/app/node_modules
       - runtime-data:/app/runtime
     ports:
-      - "3001:3001"
+      - "9200:9200"
     command: sh -c "npm install && npm run dev"
 
   frontend:
@@ -63,14 +63,14 @@ services:
       app:
         condition: service_started
     environment:
-      VITE_API_URL: http://localhost:3001
-      VITE_SOCKET_URL: http://localhost:3001
+      VITE_API_URL: http://localhost:9200
+      VITE_SOCKET_URL: http://localhost:9200
     volumes:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
     ports:
-      - "5173:5173"
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+      - "9100:9100"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 9100"
 
 volumes:
   runtime-data:
