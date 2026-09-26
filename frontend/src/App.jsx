@@ -50,6 +50,21 @@ function NavigationBreadcrumbs({ current }) {
 // refresh still restores the member, while a fresh visitor is never handed the
 // previous member's session.
 const SESSION_HANDLE_KEY = "tapdao.sessionHandle";
+const MOBILE_SCAN_SESSION_KEY = "tapdao.mobileScanSession";
+
+function readMobileScanSession() {
+  try {
+    const existing = window.sessionStorage.getItem(MOBILE_SCAN_SESSION_KEY);
+    if (existing) return existing;
+    const created =
+      window.crypto?.randomUUID?.() ||
+      `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    window.sessionStorage.setItem(MOBILE_SCAN_SESSION_KEY, created);
+    return created;
+  } catch {
+    return `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
 
 function readSessionHandle() {
   try {
@@ -641,6 +656,7 @@ function App() {
   // never be applied to the member who is signed in now.
   const sessionEpochRef = useRef(0);
   const handledClaimsRef = useRef(new Set());
+  const mobileScanSessionRef = useRef(isMobileUi ? readMobileScanSession() : "");
   const lastTouchRef = useRef(0);
   const onSessionLostRef = useRef(null);
   const aiElapsedRef = useRef(null);
@@ -1010,8 +1026,9 @@ function App() {
         const data = await apiPost("/register", { cardId, name, pin });
         setRegisterCardId(null);
         applySession({ ...data.voter, cardId }, data.session);
-        setIntendedAction("read");
-        setActiveTab("vote");
+        const nextAction = intendedAction === "write" ? "write" : "read";
+        setIntendedAction(nextAction);
+        setActiveTab(nextAction === "write" ? "create" : "vote");
         notify(`Welcome, ${data.voter.name}! Card registered with 1000 tokens.`);
       } catch (error) {
         setRegisterError(error.message);
@@ -1019,7 +1036,7 @@ function App() {
         setRegisterLoading(false);
       }
     },
-    [apiPost, applySession, notify],
+    [apiPost, applySession, intendedAction, notify],
   );
 
   // ── Cast Vote ──
@@ -1239,7 +1256,9 @@ function App() {
         });
         if (data && data.voter) {
           signIn(data.voter, data.session);
-          setIntendedAction("read");
+          const nextAction = intendedAction === "write" ? "write" : "read";
+          setIntendedAction(nextAction);
+          setActiveTab(nextAction === "write" ? "create" : "vote");
           if (payload.transaction) {
             setTransactions((prev) => {
               if (prev.some((entry) => entry.id === payload.transaction.id)) return prev;
@@ -1258,7 +1277,7 @@ function App() {
         }
       }
     },
-    [apiPost, isMobileUi, notify, signIn],
+    [apiPost, intendedAction, isMobileUi, notify, signIn],
   );
 
   // ── Socket.IO Setup ──
@@ -1267,7 +1286,10 @@ function App() {
       path: "/socket.io",
       transports: ["websocket", "polling"],
       withCredentials: true,
-      auth: { clientRole: isMobileUi ? "mobile" : "dashboard" },
+      auth: {
+        clientRole: isMobileUi ? "mobile" : "dashboard",
+        scanSession: isMobileUi ? mobileScanSessionRef.current : "",
+      },
     });
     socketRef.current = socket;
 
@@ -1383,7 +1405,7 @@ function App() {
 
           const sid = socket.id || "";
           const data = await apiGet(
-            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}`,
+            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`,
           );
 
           // Clean URL after scan
@@ -1555,6 +1577,8 @@ function App() {
     });
   };
 
+  const mobileShortcutUrl = `${window.location.origin}/scan?cardId=YOUR_CARD_ID&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`;
+
   // ═══ RENDER ═══
 
   // ─── GATE: Entry / Welcome ───
@@ -1668,6 +1692,18 @@ function App() {
               Submit
             </button>
           </div>
+          <button
+            type="button"
+            className="secondary-btn btn-block"
+            style={{ marginTop: "1rem" }}
+            onClick={() => copyToClipboard(mobileShortcutUrl, "mobile-scan")}
+          >
+            {copiedUrl === "mobile-scan" ? <Check size={16} /> : <Copy size={16} />}
+            {copiedUrl === "mobile-scan" ? "Device ID Copied" : "Copy Device ID"}
+          </button>
+          <p style={{ margin: "0.7rem 0 0", fontSize: "0.75rem", color: "var(--ink-muted)" }}>
+            Replace YOUR_CARD_ID in the copied URL. Copy it on the phone that will tap the card; it only reaches this mobile session.
+          </p>
         </div>
 
         {registerCardId ? (

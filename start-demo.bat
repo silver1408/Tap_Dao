@@ -24,8 +24,8 @@ start "Backend Server" cmd /k "cd /d %~dp0backend && set ""PORT=9201"" && node s
 ping 127.0.0.1 -n 4 >nul
 
 :: Step 4: Start frontend
-echo [4/6] Starting frontend (port 9100)...
-start "Frontend Dev" cmd /k "cd /d %~dp0frontend && set ""VITE_PROXY_TARGET=http://localhost:9201"" && npx vite --host 0.0.0.0 --port 9100"
+echo [4/6] Starting frontend (port 9101)...
+start "Frontend Dev" cmd /k "cd /d %~dp0frontend && set ""VITE_PROXY_TARGET=http://localhost:9201"" && npx vite --host 0.0.0.0 --port 9101"
 ping 127.0.0.1 -n 3 >nul
 
 :: Step 5: Start Apple Watch UI
@@ -44,12 +44,12 @@ echo.
 echo ============================================
 echo   All services started!
 echo.
-echo   Frontend:    http://localhost:9100
+echo   Frontend:    http://localhost:9101
 echo   Watch UI:    http://localhost:4000
 echo   Backend:     http://localhost:9201
 echo   Blockchain:  http://localhost:8545
 echo.
-echo   Local phone: http://192.168.29.45:9100
+echo   Local phone: http://192.168.29.45:9101
 echo   Public URL:  Check Activity tab in the app
 echo ============================================
 echo.
