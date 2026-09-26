@@ -1596,11 +1596,12 @@ io.on("connection", async (socket) => {
     socket.handshake.auth?.clientRole || socket.handshake.query?.clientRole;
   socket.data.clientRole = requestedRole === "mobile" ? "mobile" : "dashboard";
 
-  const connectedSession =
-    socket.data.clientRole === "mobile" ? currentSession(socket.request) : null;
-  socket.data.session = connectedSession
-    ? { cardId: connectedSession.record.cardId }
-    : null;
+  // Do not infer a mobile socket's active card from the HttpOnly cookie here.
+  // The session handle lives in sessionStorage, so a cookie can survive after
+  // the UI has cleared its local session. Treating that stale cookie as an
+  // active socket subscription would suppress the next card-scan event. The
+  // claim and logout routes explicitly keep this marker in sync instead.
+  socket.data.session = null;
 
   const proposalsData = await readAllProposals();
   const state = store.getState();
