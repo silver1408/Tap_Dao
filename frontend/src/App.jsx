@@ -1693,7 +1693,7 @@ function App() {
     });
   };
 
-  const mobileShortcutUrl = `${window.location.origin}/scan?cardId=YOUR_CARD_ID&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`;
+  const mobileShortcutUrl = `${API_BASE}/scan?cardId=YOUR_CARD_ID&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`;
 
   // ═══ RENDER ═══
 
