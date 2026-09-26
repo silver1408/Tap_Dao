@@ -62,7 +62,7 @@ TapDAO combines:
 - 🤖 AI proposal drafting (`/proposals/generate`)
 - 🧠 AI proposal problem summarization (`/proposals/summarize-problem`)
 - 🖼️ Optional image upload + cropping for proposals
-- 🐳 Dockerized multi-service local stack
+- 🐳 Dockerized stack behind a Cloudflare Tunnel (`tap.kiyoai.in` / `tap-back.kiyoai.in`)
 
 ## 7) Core Innovation
 
@@ -236,18 +236,26 @@ Tap_Dao_Off-Grid/
 │   ├── services/
 │   │   └── proposalSummaryService.js
 │   ├── lib/
-│   │   └── crypto.js
+│   │   ├── crypto.js
+│   │   ├── jsonStore.js
+│   │   └── sessionManager.js
 │   ├── server.js
 │   ├── hardhat.config.js
-│   └── Dockerfile
+│   ├── Dockerfile
+│   └── docker-compose.yml      # backend-only stack
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx
 │   │   ├── components/ProposalPreviewModal.jsx
 │   │   ├── lib/{crypto.js,cropUtils.js}
 │   │   └── services/proposalSummaryService.js
-│   └── Dockerfile
-└── docker-compose.yml
+│   ├── Dockerfile              # Vite build → nginx
+│   ├── nginx.conf              # serves https://tap.kiyoai.in
+│   ├── nginx-security-headers.conf
+│   └── vite.config.js
+├── cloudflare/                 # tunnel scripts + ingress example
+├── .env.example                # production configuration template
+└── docker-compose.yml          # full production stack
 ```
 
 ## 19) Database Schema Overview
@@ -278,8 +286,9 @@ Current implementation is **storage-light** and mostly on-chain/in-memory:
 ### API example (encrypted POST)
 
 ```bash
-curl -X POST http://localhost:3001/proposals \
+curl -X POST https://tap-back.kiyoai.in/proposals \
   -H "Content-Type: application/json" \
+  -H "Origin: https://tap.kiyoai.in" \
   -d '{"payload":"<encrypted-json-string>"}'
 ```
 
@@ -322,43 +331,67 @@ cd ../frontend && npm install
 
 ## 23) Environment Variables Setup
 
-Create `backend/.env`:
+### It runs with no setup
 
-```env
-PORT=3001
-RPC_URL=http://127.0.0.1:8545
-ADDRESS_FILE=./address.json
-CRYPTO_SECRET_KEY=replace_with_strong_secret
+`docker-compose.yml` carries working defaults for every setting, so the stack
+starts even without a `.env` file:
 
-FEATHERLESS_API_KEY=your_featherless_key
-FEATHERLESS_BASE_URL=https://api.featherless.ai/v1
-FEATHERLESS_MODEL=meta-llama/Llama-3.2-3B-Instruct
-
-OLLAMA_API_KEY=your_ollama_key_if_using_cloud
-OLLAMA_HOST=https://ollama.com
-OLLAMA_MODEL=gpt-oss:120b
+```bash
+docker compose up -d --build
 ```
 
-Create `frontend/.env`:
+A ready-to-use root `.env` is also provided. Copy it only if you want to change
+something without editing the Compose file — the demo keys in it are already
+filled in and match the Compose defaults exactly:
 
-```env
-VITE_API_URL=http://localhost:3001
-VITE_SOCKET_URL=http://localhost:3001
+```bash
+cp .env.example .env
 ```
+
+Before exposing a real deployment, replace the two demo secrets in **both**
+places (or in `.env` alone) with your own:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # run twice
+```
+
+The variables that define the public topology:
+
+| Variable | Production value | Purpose |
+|---|---|---|
+| `PUBLIC_APP_URL` | `https://tap.kiyoai.in` | UI origin; the only entry in the CORS allow-list and the base for invite links/QR codes |
+| `PUBLIC_API_URL` | `https://tap-back.kiyoai.in` | API origin reported to the browser and inlined as `VITE_API_URL` |
+| `SESSION_COOKIE_SAME_SITE` | `none` | Required: the cookie is cross-site, and `Lax` would be dropped on every `fetch` |
+| `COOKIE_SECURE` | `auto` | Adds `Secure` because the Cloudflare Tunnel terminates TLS |
+| `TRUST_PROXY` | `1` | Lets the backend trust `X-Forwarded-Proto` from the tunnel |
+| `CRYPTO_SECRET_KEY` | demo default | Must equal `VITE_CRYPTO_SECRET_KEY` (the compose file passes it to the frontend build) |
+| `SESSION_SECRET` | demo default | Signs the session cookie; changing it signs everyone out |
+
+### Running the backend directly
+
+Use `backend/.env.example` (copy to `backend/.env`) — it documents the same
+values for a bare-metal run, where `RPC_URL` points at the local Hardhat node
+instead of the Compose service name.
 
 ## 24) Docker Compose Setup
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build   # .env is optional; defaults are built in
 docker compose ps
 docker compose logs -f
 ```
 
-Services in root compose:
-- `hardhat`
-- `deploy`
-- `app` (backend)
-- `frontend`
+Services in the root compose file:
+
+| Service | Role | Reachable as |
+|---|---|---|
+| `hardhat` | Local EVM chain | `http://hardhat:8545` (internal only) |
+| `deploy` | One-shot contract deployment | runs once, then exits |
+| `app` | Node.js API | `https://tap-back.kiyoai.in` (public) |
+| `frontend` | nginx serving the built React app | `https://tap.kiyoai.in` (public) |
+
+The API and UI ports are published on `127.0.0.1` only, so the Cloudflare Tunnel
+on the host is the sole public entry point. See `cloudflare/README.md`.
 
 ## 25) Running Locally (Without Docker)
 
@@ -383,14 +416,44 @@ npm run dev
 
 ## 26) Production Deployment Guide
 
-Suggested production blueprint:
-1. Deploy audited contracts to target EVM chain.
+### Current self-hosted topology
+
+```
+   member's phone / kiosk browser
+              │  https
+   ┌──────────┴───────────┐   Cloudflare Tunnel (TLS terminates here)
+   ▼                      ▼
+tap.kiyoai.in      tap-back.kiyoai.in
+   frontend             app  (Node.js API + Socket.IO)
+   (nginx)                 │ RPC_URL=http://hardhat:8545
+                           ▼
+                        hardhat  (internal Compose network only)
+```
+
+The browser calls the API cross-origin, so the backend owns CORS, the session
+cookie attributes and the WebSocket origin check; the frontend container only
+serves static files.
+
+### Deployment steps
+
+1. `docker compose up -d --build` (optional: `cp .env.example .env` and replace
+   the demo `SESSION_SECRET` / `CRYPTO_SECRET_KEY` with generated values).
+2. Map both hostnames to the loopback ports in the Cloudflare dashboard (or use
+   `cloudflare/tunnel-config.example.yml`).
+3. `docker compose up -d --build`.
+4. `cloudflare\start-cloudflare.bat` to launch the tunnel, or run
+   `cloudflared tunnel run <name>` if the tunnel is managed elsewhere.
+5. Confirm `https://tap-back.kiyoai.in/health` responds and that
+   `https://tap.kiyoai.in` loads with no CORS errors.
+
+### Remaining hardening
+
+1. Deploy audited contracts to a real EVM chain instead of the bundled Hardhat node.
 2. Replace demo hardcoded keys with secure identity wallet provisioning.
-3. Run backend behind TLS + reverse proxy.
-4. Use managed DB + Redis for durable state and queues.
-5. Use KMS/HSM-backed secret and key lifecycle management.
-6. Add observability (metrics, tracing, audit logs).
-7. Use CI/CD + staged rollouts + infra-as-code.
+3. Use managed DB + Redis for durable state and queues.
+4. Use KMS/HSM-backed secret and key lifecycle management.
+5. Add observability (metrics, tracing, audit logs).
+6. Use CI/CD + staged rollouts + infra-as-code.
 
 ---
 

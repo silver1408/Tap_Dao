@@ -1,12 +1,42 @@
+# ============================================================
+#  Tap DAO — self-hosted production stack (Cloudflare Tunnel)
+# ============================================================
+#  Public surface (the only two hostnames that exist):
+#    https://tap.kiyoai.in      → frontend  (nginx serving the built React app)
+#    https://tap-back.kiyoai.in → app/API   (Node.js backend)
+#
+#  Everything else stays inside the Compose network. The Hardhat chain is
+#  never published, and the UI/API ports are published on 127.0.0.1 only, so a
+#  host-level `cloudflared` can reach them while the LAN and the internet
+#  cannot.
+#
+#  Every setting below already has a working DEMO default, so
+#      docker compose up -d --build
+#  starts the stack with no .env at all. Copy .env.example → .env to override
+#  anything without editing this file.
+#
+#  The two secrets are demo values that are published in this repository.
+#  Generate your own before exposing a real deployment:
+#      node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+#  Member wallet keys are never protected by CRYPTO_SECRET_KEY — they are
+#  sealed with each member's own PIN (PBKDF2 + AES-256-GCM).
+# ============================================================
+
 services:
+  # ── Local EVM chain (internal only, never published) ──────────────────────
   hardhat:
     build:
       context: ./backend
     restart: unless-stopped
+    environment:
+      HARDHAT_NETWORK: hardhat
     command: npx hardhat node --hostname 0.0.0.0
-    ports:
-      - "8545:8545"
+    expose:
+      - "8545"
+    volumes:
+      - hardhat-state:/root/.hardhat
     healthcheck:
+      # Container-internal loopback: correct here, it never leaves the container.
       test:
         - CMD-SHELL
         - node -e "const http=require('http');const req=http.request({hostname:'127.0.0.1',port:8545,method:'POST',headers:{'Content-Type':'application/json'}},res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.write('{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}');req.end();"
@@ -15,6 +45,7 @@ services:
       retries: 20
       start_period: 10s
 
+  # ── One-shot contract deployment ──────────────────────────────────────────
   deploy:
     build:
       context: ./backend
@@ -22,6 +53,7 @@ services:
       hardhat:
         condition: service_healthy
     environment:
+      # Docker service name, not a public URL.
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
     working_dir: /app
@@ -32,6 +64,7 @@ services:
     restart: "no"
     command: sh -c "npx hardhat run scripts/deploy.js --network localhost"
 
+  # ── Backend API (public origin: https://tap-back.kiyoai.in) ───────────────
   app:
     build:
       context: ./backend
@@ -42,65 +75,94 @@ services:
       deploy:
         condition: service_completed_successfully
     environment:
-      PORT: 9200
+      PORT: ${BACKEND_PORT:-9200}
+      # Docker service name, not a public URL.
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
+
       # Persistent state (NFC cards, wallet slots, proposal images, sessions)
-      # lives in /app/runtime, which is the runtime-data volume below.
       DATA_DIR: /app/runtime
-      # Uploaded images: the ./backend bind mount already keeps ./backend/uploads
-      # on the host, so files survive container recreation.
       UPLOAD_DIR: /app/uploads
+
+      # Public origins: CORS allow-list, invite/QR links, WebSocket origin.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://tap.kiyoai.in}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://tap-back.kiyoai.in}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://tap.kiyoai.in}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+
+      # Transport + session secrets. Demo defaults; override in .env.
+      CRYPTO_SECRET_KEY: ${CRYPTO_SECRET_KEY:-8e18648a20e5d3e0e6710f8a24516e3745cc54ffb72b384b25e7760cdb4bc7ff}
+      SESSION_SECRET: ${SESSION_SECRET:-98439fe9c1680d6c2f0eddcece833b39e11e696ca20d37dfa33384a8b1200d32}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-tapdao_sid}
+      SESSION_IDLE_TTL_MS: ${SESSION_IDLE_TTL_MS:-1800000}
+      SESSION_ABSOLUTE_TTL_MS: ${SESSION_ABSOLUTE_TTL_MS:-43200000}
+      # The UI and the API are different hostnames, so the session cookie must be
+      # SameSite=None; Secure or the browser drops it on every cross-origin call.
+      SESSION_COOKIE_SAME_SITE: ${SESSION_COOKIE_SAME_SITE:-none}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5242880}
+
       # AI Assist provider (server-side only; the browser never sees this).
-      COLAB_AI_URL: ""
-      # Transport/session settings.
-      CRYPTO_SECRET_KEY: 4dc4acda5671ad45a7ff926cbdd4ae15c385f5a82ba6f9869e568a5a4ab7fd6b
-      SESSION_SECRET: 4ab27a7df264277632e2f141d937288dc2d0d21e28373719c3d3d7e380ce7562
-      SESSION_COOKIE_NAME: tapdao_sid
-      SESSION_IDLE_TTL_MS: "1800000"
-      SESSION_ABSOLUTE_TTL_MS: "43200000"
-      COOKIE_SECURE: auto
-      MAX_UPLOAD_BYTES: "52427880"
-      CORS_ALLOWED_ORIGINS: "https://tap.kiyoai.in,http://localhost:9100,http://127.0.0.1:9100"
+      COLAB_AI_URL: ${COLAB_AI_URL:-}
+      AI_GENERATE_TIMEOUT_MS: ${AI_GENERATE_TIMEOUT_MS:-90000}
+      AI_SUMMARIZE_TIMEOUT_MS: ${AI_SUMMARIZE_TIMEOUT_MS:-60000}
+      AI_HEALTH_TIMEOUT_MS: ${AI_HEALTH_TIMEOUT_MS:-8000}
+
+      # Cloudflare tunnel log, so /tunnel-info can report the live origin when
+      # running a quick tunnel instead of the named one.
+      CLOUDFLARED_LOG: /app/runtime/cloudflared.log
     working_dir: /app
     volumes:
       - ./backend:/app
       - backend-node-modules:/app/node_modules
       - runtime-data:/app/runtime
     ports:
-      - "9200:9200"
+      # Loopback only: reachable by the host's cloudflared, invisible to the LAN.
+      - "127.0.0.1:${BACKEND_PORT:-9200}:${BACKEND_PORT:-9200}"
     healthcheck:
       test:
         - CMD-SHELL
-        - node -e "require('http').get({hostname:'127.0.0.1',port:9200,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+        - node -e "require('http').get({hostname:'127.0.0.1',port:process.env.PORT||9200,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 20s
-    command: sh -c "npm install && npm run dev"
+    command: node server.js
 
+  # ── Frontend (public origin: https://tap.kiyoai.in) ───────────────────────
+  # Vite inlines VITE_* at build time, so the API origin is a build arg, not a
+  # runtime variable. The resulting bundle is served by nginx.
   frontend:
     build:
       context: ./frontend
+      args:
+        VITE_API_URL: ${PUBLIC_API_URL:-https://tap-back.kiyoai.in}
+        VITE_SOCKET_URL: ${PUBLIC_API_URL:-https://tap-back.kiyoai.in}
+        VITE_CRYPTO_SECRET_KEY: ${CRYPTO_SECRET_KEY:-8e18648a20e5d3e0e6710f8a24516e3745cc54ffb72b384b25e7760cdb4bc7ff}
+        VITE_AI_TIMEOUT_MS: ${VITE_AI_TIMEOUT_MS:-100000}
     restart: unless-stopped
-    working_dir: /app
     depends_on:
       app:
         condition: service_healthy
     environment:
-      # Same-origin setup: the Vite dev server proxies API + socket traffic to
-      # the backend, so LAN phones and the Cloudflare tunnel keep working.
-      VITE_PROXY_TARGET: http://app:9200
-      VITE_CRYPTO_SECRET_KEY: 4dc4acda5671ad45a7ff926cbdd4ae15c385f5a82ba6f9869e568a5a4ab7fd6b
-      VITE_AI_TIMEOUT_MS: "100000"
-    volumes:
-      - ./frontend:/app
-      - frontend-node-modules:/app/node_modules
+      # The backend's public origin, for anything the browser must reach.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://tap.kiyoai.in}
+      # Only used by the dev server if it is started manually inside the container.
+      VITE_PROXY_TARGET: http://app:${BACKEND_PORT:-9200}
     ports:
-      - "9100:9100"
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 9100"
+      # Loopback only: reachable by the host's cloudflared, invisible to the LAN.
+      - "127.0.0.1:${FRONTEND_PORT:-9100}:9100"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:9100/ >/dev/null || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   runtime-data:
   backend-node-modules:
-  frontend-node-modules:
+  hardhat-state:

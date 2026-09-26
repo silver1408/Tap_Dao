@@ -1,7 +1,24 @@
 const CryptoJS = require("crypto-js");
 
-// IMPORTANT: Keep this secret safe (use env in production)
-const SECRET_KEY = process.env.CRYPTO_SECRET_KEY || "your-very-strong-secret-key";
+// Transport encryption for request/response payloads. The key is shared with
+// the browser bundle, so it must come from the environment in production: the
+// dev fallback below is public knowledge and would let anyone forge payloads.
+const DEV_FALLBACK_KEY = "your-very-strong-secret-key";
+const SECRET_KEY = process.env.CRYPTO_SECRET_KEY || "";
+
+if (!SECRET_KEY) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "CRYPTO_SECRET_KEY is required in production. Set it in .env (see .env.example) " +
+        "and give the frontend the same value as VITE_CRYPTO_SECRET_KEY.",
+    );
+  }
+  console.warn(
+    "[crypto] CRYPTO_SECRET_KEY is not set - using the public development key. " +
+      "Never run production without it.",
+  );
+  SECRET_KEY = DEV_FALLBACK_KEY;
+}
 
 function encrypt(text) {
   if (!text) return "";

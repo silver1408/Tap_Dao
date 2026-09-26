@@ -4,12 +4,26 @@ import "./App.css";
 import { ClipboardList, PenTool, Activity, Copy, Check, Globe, Link, Users, Sun, Moon, Coffee, Monitor, LogOut } from "lucide-react";
 import { decrypt, encrypt } from "./lib/crypto";
 
-// ─── API Base ───
+// ─── API / Socket origins ───
+// Production build: the UI is served from https://tap.kiyoai.in and talks to
+// the API on https://tap-back.kiyoai.in, both injected at build time by
+// docker-compose. Falling back to window.location.origin keeps the local
+// single-origin (Vite dev proxy) workflow working.
 const API_BASE = (
   import.meta.env.VITE_API_URL || window.location.origin
 ).replace(/\/$/, "");
 
-const SOCKET_BASE = import.meta.env.VITE_SOCKET_URL || API_BASE || undefined;
+const SOCKET_BASE = (
+  import.meta.env.VITE_SOCKET_URL || API_BASE || undefined
+).replace(/\/$/, "");
+
+if (import.meta.env.PROD && !import.meta.env.VITE_API_URL) {
+  console.error(
+    "[Tap DAO] VITE_API_URL is not set in this production build — the app will " +
+      `call ${API_BASE} instead of the public API. Set VITE_API_URL to the public ` +
+      "API origin and rebuild.",
+  );
+}
 
 const AI_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AI_TIMEOUT_MS || 100000);
 const SESSION_TOUCH_INTERVAL_MS = 30000;
@@ -313,7 +327,7 @@ function App() {
   });
 
   // ── V2: Tunnel + Invites ──
-  const [tunnelInfo, setTunnelInfo] = useState({ tunnelUrl: null, lanUrl: null, tunnelReady: false });
+  const [tunnelInfo, setTunnelInfo] = useState({ appUrl: null, apiUrl: null, tunnelUrl: null, tunnelReady: false });
   const [copiedUrl, setCopiedUrl] = useState(null);
   const [invites, setInvites] = useState([]);
   const [inviteLabel, setInviteLabel] = useState("");
@@ -1119,23 +1133,30 @@ function App() {
       setTimeout(handleUrlScan, 500);
     }
 
-    // Fetch tunnel info and poll until ready
+    // Resolve the public origins. With PUBLIC_APP_URL configured the server
+    // answers immediately, so polling only matters for the quick-tunnel dev flow.
     const fetchTunnelInfo = async () => {
       try {
         const res = await fetch(`${API_BASE}/tunnel-info`, { credentials: "include" });
         const data = await res.json();
         setTunnelInfo(data);
-      } catch {}
+        return data;
+      } catch {
+        return null;
+      }
     };
-    fetchTunnelInfo();
-    const tunnelPoll = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/tunnel-info`, { credentials: "include" });
-        const data = await res.json();
-        setTunnelInfo(data);
-        if (data.tunnelReady) clearInterval(tunnelPoll);
-      } catch {}
-    }, 5000);
+    let tunnelPoll = null;
+    fetchTunnelInfo().then((data) => {
+      if (data && !data.tunnelReady) {
+        tunnelPoll = setInterval(async () => {
+          const next = await fetchTunnelInfo();
+          if (next && next.tunnelReady && tunnelPoll) {
+            clearInterval(tunnelPoll);
+            tunnelPoll = null;
+          }
+        }, 5000);
+      }
+    });
 
     // Fetch proposals
     apiGet("/proposals")
@@ -1787,48 +1808,39 @@ function App() {
         {/* ─── ACTIVITY TAB ─── */}
         {activeTab === "activity" && (
           <>
-            {/* ─ V2: Access Panel – Tunnel & Invite ─ */}
+            {/* ─ V2: Access Panel – Public endpoints & Invite ─ */}
             <div className="panel access-panel">
               <h2><Globe size={18} className="inline-icon" /> Remote Access</h2>
 
-              {/* Public tunnel URL */}
+              {/* Public UI origin, served through the Cloudflare tunnel */}
               <div className="access-section">
-                <p className="access-label">Public URL (worldwide)</p>
-                {tunnelInfo.tunnelReady ? (
-                  <div className="access-url-row">
-                    <span className="access-url">{tunnelInfo.tunnelUrl}</span>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      onClick={() => copyToClipboard(tunnelInfo.tunnelUrl, "tunnel")}
-                      title="Copy public URL"
-                    >
-                      {copiedUrl === "tunnel" ? <Check size={16} /> : <Copy size={16} />}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="access-url-row muted">
-                    <span className="spinner" style={{ width: 14, height: 14 }} />
-                    <span style={{ fontSize: "0.8rem" }}>Tunnel starting…</span>
-                  </div>
-                )}
+                <p className="access-label">This app (worldwide)</p>
+                <div className="access-url-row">
+                  <span className="access-url">{tunnelInfo.appUrl || "detecting…"}</span>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => copyToClipboard(tunnelInfo.appUrl, "app")}
+                    title="Copy app URL"
+                  >
+                    {copiedUrl === "app" ? <Check size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
               </div>
 
-              {/* LAN URL */}
+              {/* Public API origin the browser calls directly */}
               <div className="access-section">
-                <p className="access-label">Local network (same Wi-Fi)</p>
+                <p className="access-label">API endpoint (worldwide)</p>
                 <div className="access-url-row">
-                  <span className="access-url">{tunnelInfo.lanUrl || "detecting…"}</span>
-                  {tunnelInfo.lanUrl && (
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      onClick={() => copyToClipboard(tunnelInfo.lanUrl, "lan")}
-                      title="Copy LAN URL"
-                    >
-                      {copiedUrl === "lan" ? <Check size={16} /> : <Copy size={16} />}
-                    </button>
-                  )}
+                  <span className="access-url">{tunnelInfo.apiUrl || "detecting…"}</span>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => copyToClipboard(tunnelInfo.apiUrl, "api")}
+                    title="Copy API URL"
+                  >
+                    {copiedUrl === "api" ? <Check size={16} /> : <Copy size={16} />}
+                  </button>
                 </div>
               </div>
 

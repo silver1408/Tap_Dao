@@ -1,0 +1,46 @@
+# ============================================================
+#  Tap DAO — Cloudflare Tunnel ingress (example)
+# ============================================================
+#  Copy to cloudflare/config.yml if you run the tunnel from this machine, or
+#  paste the same rules into the Cloudflare Zero Trust dashboard
+#  (Networks → Tunnels → <your tunnel> → Public Hostname).
+#
+#  The two public hostnames map onto the loopback ports published by
+#  docker-compose.yml:
+#      https://tap.kiyoai.in      → http://localhost:9100   (nginx, React app)
+#      https://tap-back.kiyoai.in → http://localhost:9200   (Node.js API)
+#
+#  Both ports are bound to 127.0.0.1 by the Compose file, so this tunnel is
+#  the only way in from the internet. The Hardhat RPC (8545) is deliberately
+#  absent: the chain is internal to the Compose network.
+#
+#  No credentials or tunnel tokens belong in this file. The tunnel secret is
+#  read from the environment when the tunnel is created:
+#      cloudflared tunnel login
+#      cloudflared tunnel create tapdao
+#      cloudflared tunnel route dns tapdao tap.kiyoai.in
+#      cloudflared tunnel route dns tapdao tap-back.kiyoai.in
+#  and the credentials file lives in %USERPROFILE%\.cloudflared\<TUNNEL-ID>.json.
+# ============================================================
+
+tunnel: tapdao
+credentials-file: C:\Users\<user>\.cloudflared\<TUNNEL-ID>.json
+
+# The API first: nothing should be routed to the SPA that belongs on the API
+# hostname (e.g. /scan, /session, /invites).
+ingress:
+  - hostname: tap-back.kiyoai.in
+    service: http://localhost:9200
+    originRequest:
+      # Preserve the client IP and the HTTPS scheme so the backend can issue
+      # Secure session cookies and log real addresses.
+      httpHostHeader: tap-back.kiyoai.in
+      noTLSVerify: false
+
+  - hostname: tap.kiyoai.in
+    service: http://localhost:9100
+    originRequest:
+      httpHostHeader: tap.kiyoai.in
+
+  # Required catch-all rule.
+  - service: http_status:404

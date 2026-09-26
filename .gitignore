@@ -13,9 +13,10 @@ package-lock.json        # keep package.json, ignore lock files (optional: remov
 # ── Environment / Secrets ────────────────────────────────────
 .env
 .env.*
+# always keep the templates
 !.env.example
 !backend/.env.example
-            # always allow example env template
+!frontend/.env.example
 
 # ── Cloudflare tunnel logs (contain ephemeral URLs, not secrets
 #    but no need to version them) ────────────────────────────

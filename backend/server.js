@@ -21,24 +21,72 @@ const { createSessionManager } = require("./lib/sessionManager");
 
 const app = express();
 app.disable("x-powered-by");
-app.set("trust proxy", true);
+// Behind the Cloudflare Tunnel every request arrives over HTTPS on a local
+// port, so the forwarded protocol header is the only reliable source for
+// req.secure. TRUST_PROXY=0 is only for running the API directly.
+const TRUST_PROXY = String(process.env.TRUST_PROXY || "1").toLowerCase();
+app.set(
+  "trust proxy",
+  TRUST_PROXY === "0" || TRUST_PROXY === "false"
+    ? false
+    : TRUST_PROXY === "loopback"
+      ? "loopback"
+      : true,
+);
+
+/**
+ * Reduces a configured public URL to a comparable `scheme://host[:port]`
+ * origin: no trailing slash, no path, no query. Cloudflare sometimes hands out
+ * a value with a trailing slash or an ingress path, and a mismatch there would
+ * silently break CORS.
+ */
+function normalizePublicUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(withScheme).origin.toLowerCase();
+  } catch (_error) {
+    return "";
+  }
+}
+
+// Production topology: the kiosk UI is served from https://tap.kiyoai.in and
+// this API is public at https://tap-back.kiyoai.in. Only the UI origin may send
+// credentialed requests; every other origin is rejected outright.
+const PUBLIC_APP_URL = normalizePublicUrl(process.env.PUBLIC_APP_URL);
+const PUBLIC_API_URL = normalizePublicUrl(process.env.PUBLIC_API_URL);
 
 const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || "")
   .split(",")
-  .map((value) => value.trim())
+  .map((value) => normalizePublicUrl(value))
   .filter(Boolean);
+
+if (ALLOWED_ORIGINS.length === 0 && PUBLIC_APP_URL) ALLOWED_ORIGINS.push(PUBLIC_APP_URL);
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // same-origin / server-to-server / curl
+  return ALLOWED_ORIGINS.includes(normalizePublicUrl(origin));
+}
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
-        return callback(null, true);
-      }
-      return callback(null, false);
+      // Never reflect an arbitrary origin: an allow-list miss gets no CORS
+      // headers at all, so the browser blocks the (credentialed) request.
+      callback(null, isAllowedOrigin(origin));
     },
     credentials: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "X-Session-Handle"],
+    maxAge: 86400,
   }),
 );
+// Responses differ per Origin, so caches must key on it.
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
 app.use(express.json({ limit: "256kb" }));
 
 // Serve built frontend (from frontend/dist/) at root — this is the kiosk UI
@@ -112,7 +160,16 @@ const upload = multer({
 });
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*", credentials: true } });
+// The browser opens the WebSocket from https://tap.kiyoai.in, so the handshake
+// must be allowed for that origin only. `origin: "*"` is invalid together with
+// `credentials: true` and would expose the session to any site.
+const io = new Server(server, {
+  cors: {
+    origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
+    credentials: true,
+    methods: ["GET", "POST"],
+  },
+});
 
 const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
 const addressFilePath =
@@ -207,6 +264,9 @@ const sessions = createSessionManager({
   cookieName: process.env.SESSION_COOKIE_NAME || "tapdao_sid",
   idleTtlMs: Number(process.env.SESSION_IDLE_TTL_MS || 0) || undefined,
   absoluteTtlMs: Number(process.env.SESSION_ABSOLUTE_TTL_MS || 0) || undefined,
+  // The UI and the API live on different Cloudflare hostnames, so the cookie
+  // must be SameSite=None; Secure to survive cross-origin fetch requests.
+  sameSite: process.env.SESSION_COOKIE_SAME_SITE || "lax",
 });
 sessions.startReaper();
 
@@ -1318,6 +1378,24 @@ const CLOUDFLARED_LOG = process.env.CLOUDFLARED_LOG
   : path.join(__dirname, "..", "cloudflared.log");
 let cachedTunnelUrl = null;
 
+/**
+ * The join link for an invite must open the kiosk UI, never the API. Prefer the
+ * configured production origin, fall back to the quick-tunnel URL when running
+ * the throwaway tunnel, and only then to a local address (development).
+ */
+function publicAppUrl(req) {
+  if (PUBLIC_APP_URL) return PUBLIC_APP_URL;
+  const origin = req && typeof req.get === "function" ? req.get("origin") : "";
+  if (origin && isAllowedOrigin(origin)) return normalizePublicUrl(origin);
+  const tunnelUrl = extractTunnelUrl();
+  if (tunnelUrl) return normalizePublicUrl(tunnelUrl);
+  return `http://localhost:${port}`;
+}
+
+function publicApiUrl() {
+  return PUBLIC_API_URL || PUBLIC_APP_URL || `http://localhost:${port}`;
+}
+
 function extractTunnelUrl() {
   if (cachedTunnelUrl) return cachedTunnelUrl;
   try {
@@ -1345,20 +1423,13 @@ setInterval(() => {
 
 app.get("/tunnel-info", (req, res) => {
   const tunnelUrl = extractTunnelUrl();
-  const nets = require("os").networkInterfaces();
-  let lanIp = "localhost";
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === "IPv4" && !net.internal) {
-        lanIp = net.address;
-        break;
-      }
-    }
-  }
   return res.json({
+    // The public UI, for share links and QR codes.
+    appUrl: publicAppUrl(req),
+    // The public API the browser should call.
+    apiUrl: publicApiUrl(),
     tunnelUrl: tunnelUrl || null,
-    lanUrl: `http://${lanIp}:${port}`,
-    tunnelReady: !!tunnelUrl,
+    tunnelReady: Boolean(tunnelUrl || PUBLIC_APP_URL),
   });
 });
 
@@ -1399,9 +1470,7 @@ app.post("/invites/generate", (req, res) => {
   });
   console.log(`🎟️  Invite generated: ${code} → cardId: ${cardId}`);
 
-  const tunnelUrl = extractTunnelUrl();
-  const baseUrl = tunnelUrl || `http://localhost:${port}`;
-  const joinUrl = `${baseUrl}/?invite=${code}`;
+  const joinUrl = `${publicAppUrl(req)}/?invite=${code}`;
 
   return res.json({ code, cardId, label, joinUrl, expiresAt });
 });
@@ -1411,9 +1480,7 @@ app.get("/invites/qr/:code", async (req, res) => {
   const invite = listInvites()[code];
   if (!invite) return res.status(404).json({ error: "Invite not found" });
 
-  const tunnelUrl = extractTunnelUrl();
-  const baseUrl = tunnelUrl || `http://localhost:${port}`;
-  const joinUrl = `${baseUrl}/?invite=${code}`;
+  const joinUrl = `${publicAppUrl(req)}/?invite=${code}`;
 
   try {
     const png = await QRCode.toBuffer(joinUrl, { width: 300, margin: 2 });

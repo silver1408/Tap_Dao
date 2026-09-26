@@ -33,6 +33,13 @@ function parseCookies(header) {
   return jar;
 }
 
+function normalizeSameSite(value) {
+  const raw = String(value || "lax").trim().toLowerCase();
+  if (raw === "none") return "none";
+  if (raw === "strict") return "strict";
+  return "lax";
+}
+
 function createSessionManager(options) {
   const store = options.store;
   const logger = options.logger || console;
@@ -40,6 +47,7 @@ function createSessionManager(options) {
   const idleTtlMs = Number(options.idleTtlMs || DEFAULT_IDLE_TTL_MS);
   const absoluteTtlMs = Number(options.absoluteTtlMs || DEFAULT_ABSOLUTE_TTL_MS);
   const secureCookies = Boolean(options.secureCookies);
+  const sameSite = normalizeSameSite(options.sameSite);
   const ephemeralSecret = !options.secret;
   // Shared-kiosk default: a new login supersedes the previous member.
   // Set to false only if several kiosks must hold sessions independently.
@@ -65,28 +73,36 @@ function createSessionManager(options) {
     return `${id}.${issuedAt}.${sign(id, cardId, issuedAt)}`;
   }
 
+  /**
+   * The kiosk UI (tap.kiyoai.in) and the API (tap-back.kiyoai.in) are different
+   * origins, so the browser treats the session cookie as cross-site. `Lax` (the
+   * default) is withheld from `fetch`/XHR in that case, which would log every
+   * member out immediately, so the deployment sets `SameSite=None`. Browsers
+   * only accept `None` together with `Secure`, so that flag is mandatory here.
+   */
+  function cookieSecurity(secure) {
+    const wantsSecure = secure ?? secureCookies;
+    if (sameSite === "none") return { sameSite: "None", secure: true };
+    return { sameSite: sameSite === "strict" ? "Strict" : "Lax", secure: wantsSecure };
+  }
+
   function clearCookieHeader(secure) {
-    const parts = [
-      `${cookieName}=`,
-      "Path=/",
-      "HttpOnly",
-      "SameSite=Lax",
-      `Max-Age=0`,
-      `Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
-    ];
-    if (secure ?? secureCookies) parts.push("Secure");
+    const { sameSite: attr, secure: withSecure } = cookieSecurity(secure);
+    const parts = [`${cookieName}=`, "Path=/", "HttpOnly", `SameSite=${attr}`, `Max-Age=0`, `Expires=Thu, 01 Jan 1970 00:00:00 GMT`];
+    if (withSecure) parts.push("Secure");
     return parts.join("; ");
   }
 
   function sessionCookieHeader(id, cardId, issuedAt, secure) {
+    const { sameSite: attr, secure: withSecure } = cookieSecurity(secure);
     const parts = [
       `${cookieName}=${encodeURIComponent(serializeCookie(id, cardId, issuedAt))}`,
       "Path=/",
       "HttpOnly",
-      "SameSite=Lax",
+      `SameSite=${attr}`,
       `Max-Age=${Math.floor(idleTtlMs / 1000)}`,
     ];
-    if (secure ?? secureCookies) parts.push("Secure");
+    if (withSecure) parts.push("Secure");
     return parts.join("; ");
   }
 
@@ -359,6 +375,7 @@ function createSessionManager(options) {
     idleTtlMs,
     absoluteTtlMs,
     secureCookies,
+    sameSite,
     ephemeralSecret,
     sign,
     issue,
