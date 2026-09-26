@@ -15,6 +15,34 @@ const AI_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AI_TIMEOUT_MS || 10000
 const SESSION_TOUCH_INTERVAL_MS = 30000;
 const SESSION_WARNING_SECONDS = 60;
 
+function NavigationBreadcrumbs({ current }) {
+  const isDashboard = current === "dashboard";
+
+  return (
+    <nav className={`breadcrumbs breadcrumbs-${current}`} aria-label="Breadcrumb">
+      <span className="breadcrumbs-root">Tap DAO</span>
+      <span className="breadcrumbs-separator" aria-hidden="true">/</span>
+      {isDashboard ? (
+        <>
+          <span className="breadcrumbs-current" aria-current="page">
+            Governance Dashboard
+          </span>
+          <span className="breadcrumbs-separator" aria-hidden="true">/</span>
+          <a href="/mobile">Mobile voting</a>
+        </>
+      ) : (
+        <>
+          <a href="/dashboard">Governance Dashboard</a>
+          <span className="breadcrumbs-separator" aria-hidden="true">/</span>
+          <span className="breadcrumbs-current" aria-current="page">
+            Mobile voting
+          </span>
+        </>
+      )}
+    </nav>
+  );
+}
+
 // The session cookie is HttpOnly, so the browser also keeps a *public* handle
 // for the session it believes it holds. The server refuses to act on a session
 // whose handle does not match, which is what keeps two members sharing one
@@ -291,6 +319,7 @@ function DashboardView({
     <div className="dashboard-shell">
       <header className="dashboard-header">
         <div>
+          <NavigationBreadcrumbs current="dashboard" />
           <p className="dashboard-kicker">Tap DAO / Operations</p>
           <h1>Governance Dashboard</h1>
           <p className="dashboard-subtitle">
@@ -302,9 +331,6 @@ function DashboardView({
             <span className="dot" />
             {connected ? "Live" : "Offline"}
           </span>
-          <a className="dashboard-mobile-link" href="/mobile">
-            Open mobile voting
-          </a>
         </div>
       </header>
 
@@ -411,9 +437,14 @@ function DashboardView({
 
 function App() {
   const [isMobileUi] = useState(
-    () =>
-      window.location.pathname === "/mobile" ||
-      window.matchMedia("(max-width: 767px)").matches,
+    () => {
+      const isDashboardRoute = window.location.pathname === "/dashboard";
+      return (
+        !isDashboardRoute &&
+        (window.location.pathname === "/mobile" ||
+          window.matchMedia("(max-width: 767px)").matches)
+      );
+    },
   );
 
   // ── Connection ──
@@ -1452,6 +1483,7 @@ function App() {
   if (!intendedAction && !currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <NavigationBreadcrumbs current="mobile" />
         <div className="panel gate-panel">
           <h2>Welcome to Tap DAO</h2>
           <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
@@ -1475,6 +1507,7 @@ function App() {
   if (!intendedAction && currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <NavigationBreadcrumbs current="mobile" />
         <div className="panel gate-panel">
           <h2>Welcome Back, {currentVoter.name}!</h2>
           <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
@@ -1498,6 +1531,7 @@ function App() {
   if (intendedAction && !currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
+        <NavigationBreadcrumbs current="mobile" />
         <div className="panel gate-panel" style={{ position: "relative" }}>
           <button
             className="secondary-btn"
@@ -1559,7 +1593,10 @@ function App() {
     <div className={`app-shell theme-${appTheme}`}>
       {/* ── Top Bar ── */}
       <header className="topbar">
-        <h1>Tap DAO</h1>
+        <div className="topbar-brand">
+          <h1>Tap DAO</h1>
+          <NavigationBreadcrumbs current="mobile" />
+        </div>
         <div className="topbar-right">
           <div className="theme-toggles">
             <button type="button" className="theme-btn active" onClick={cycleTheme} title={`Theme: ${appTheme}`}>

@@ -250,7 +250,7 @@ app.post("/upload", upload.single("image"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No image file provided." });
   }
-  const fileUrl = `http://localhost:3001/uploads/${req.file.filename}`;
+  const fileUrl = `http://localhost:9201/uploads/${req.file.filename}`;
   return res.json({ imageUrl: fileUrl });
 });
 

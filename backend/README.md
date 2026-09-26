@@ -43,7 +43,7 @@ In that same second terminal window, start the Node.js bridge server:
 ```bash
 node server.js
 ```
-Your dashboard is now live! Open your browser to **http://localhost:3001**
+Your dashboard is now live! Open your browser to **http://localhost:9201**
 
 ---
 
@@ -60,7 +60,7 @@ This starts three services:
 * `deploy` compiles and deploys `OffGridDAO`, then writes the contract address to shared runtime storage
 * `app` starts the Express server on `3001` after deployment is complete
 
-Open **http://localhost:3001** after the stack finishes starting.
+Open **http://localhost:9201** after the stack finishes starting.
 
 ---
 ## NFC Demonstration Workaround
@@ -83,10 +83,10 @@ Open the **Shortcuts App** on iPhone:
 3. Add Action: **Get Contents of URL**
 4. Set the URL to your Ubuntu IP address plus port 3001 and the scanning endpoint. Example:
    ```
-   http://192.168.1.15:3001/scan?cardId=Metro_Card_001
+   http://192.168.1.15:9201/scan?cardId=Metro_Card_001
    ```
 5. Uncheck "Ask before running" and hit Done!
 
 ### 3. Running the application
-Now, open `http://localhost:3001` on the laptop. Click **+ Add Proposal**, create a project, and vote for it. When the screen says "Waiting for tap...", tap the Metro Card to your iPhone. The iPhone will ping the Ubuntu laptop over Wi-Fi, execute the secure Ethereum transaction, and visually confirm it on the  screen instantly! 
- http://192.168.1.15:3001/scan?cardId=Metro_Card_001
+Now, open `http://localhost:9201` on the laptop. Click **+ Add Proposal**, create a project, and vote for it. When the screen says "Waiting for tap...", tap the Metro Card to your iPhone. The iPhone will ping the Ubuntu laptop over Wi-Fi, execute the secure Ethereum transaction, and visually confirm it on the  screen instantly! 
+ http://192.168.1.15:9201/scan?cardId=Metro_Card_001

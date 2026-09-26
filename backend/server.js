@@ -117,7 +117,9 @@ const io = new Server(server, { cors: { origin: "*", credentials: true } });
 const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
 const addressFilePath =
   process.env.ADDRESS_FILE || path.join(__dirname, "address.json");
-const port = Number(process.env.PORT || 3001);
+// The local demo stack exposes the backend on 9201. Keep this fallback aligned
+// with start-demo.bat so running `node server.js` directly behaves the same.
+const port = Number(process.env.PORT || 9201);
 
 // ─────────────────────────────────────────────
 //  WEB3 BLOCKCHAIN SETUP (Hardhat localhost)

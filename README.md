@@ -281,7 +281,7 @@ Current implementation is **storage-light** and mostly on-chain/in-memory:
 ### API example (encrypted POST)
 
 ```bash
-curl -X POST http://localhost:3001/proposals \
+curl -X POST http://localhost:9201/proposals \
   -H "Content-Type: application/json" \
   -d '{"payload":"<encrypted-json-string>"}'
 ```
@@ -345,8 +345,8 @@ OLLAMA_MODEL=gpt-oss:120b
 Create `frontend/.env`:
 
 ```env
-VITE_API_URL=http://localhost:3001
-VITE_SOCKET_URL=http://localhost:3001
+VITE_API_URL=http://localhost:9201
+VITE_SOCKET_URL=http://localhost:9201
 ```
 
 ## 24) Docker Compose Setup
