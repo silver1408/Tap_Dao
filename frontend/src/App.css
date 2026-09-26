@@ -1376,7 +1376,7 @@ select:focus {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
+  grid-template-columns: minmax(0, 1.8fr) minmax(260px, 0.6fr);
   align-items: start;
   gap: 1rem;
 }
