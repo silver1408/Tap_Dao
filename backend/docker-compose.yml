@@ -1,6 +1,7 @@
 services:
   hardhat:
     build: .
+    restart: unless-stopped
     command: npx hardhat node --hostname 0.0.0.0
     ports:
       - "8545:8545"
@@ -23,10 +24,12 @@ services:
       ADDRESS_FILE: /app/runtime/address.json
     volumes:
       - runtime-data:/app/runtime
+    restart: "no"
     command: sh -c "npx hardhat run scripts/deploy.js --network localhost"
 
   app:
     build: .
+    restart: unless-stopped
     depends_on:
       hardhat:
         condition: service_healthy
@@ -36,11 +39,30 @@ services:
       PORT: 3001
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
+      DATA_DIR: /app/runtime
+      UPLOAD_DIR: /app/uploads
+      COLAB_AI_URL: ${COLAB_AI_URL:-}
+      CRYPTO_SECRET_KEY: ${CRYPTO_SECRET_KEY:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      SESSION_IDLE_TTL_MS: ${SESSION_IDLE_TTL_MS:-}
+      SESSION_ABSOLUTE_TTL_MS: ${SESSION_ABSOLUTE_TTL_MS:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     volumes:
       - runtime-data:/app/runtime
+      - uploads-data:/app/uploads
     ports:
       - "3001:3001"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get({hostname:'127.0.0.1',port:3001,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     command: node server.js
 
 volumes:
   runtime-data:
+  uploads-data:

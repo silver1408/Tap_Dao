@@ -159,6 +159,35 @@ Primary contract: `backend/contracts/OffGridDAO.sol`
 - Token cost per vote to prevent free spam voting
 - Time-bounded sensitive UI states (balance/session auto-hide)
 
+### Shared-kiosk session isolation
+
+The kiosk is expected to be handed from member to member, so a session is only
+ever valid for the member that actually claimed it:
+
+- The session cookie is signed, HttpOnly and `SameSite=Lax`; the server keeps
+  the authoritative record (`backend/lib/sessionManager.js`).
+- Every session also carries a random public **handle** that the kiosk keeps in
+  `sessionStorage` and sends back as `X-Session-Handle`. A request whose handle
+  does not match the cookie's session is refused with `409
+  SESSION_SUPERSEDED`, and a kiosk that has no handle is refused with `401
+  SESSION_UNCLAIMED` — it never inherits whoever was signed in before.
+- A new sign-in supersedes the previous session for a short grace period (kept
+  only so the previous holder receives a clear "someone else signed in"
+  response), and every per-member UI state is reset on the kiosk.
+- Logging out revokes the server session, clears the cookie and wipes the local
+  handle plus drafts/balance/PIN state. A slow logout from a previous member can
+  no longer revoke the member who replaced them.
+- Phone-triggered NFC scans (iOS Shortcut / Android NFC app) arrive at
+  `GET /scan` on a *different device*, so the kiosk browser never gets that
+  `Set-Cookie`. The server therefore emits a single-use **claim** (hashed at
+  rest, 90 s TTL) to the kiosk, which exchanges it at `POST /session/claim` for
+  its own isolated session. Scans without a known socket are only delivered to
+  kiosks that are not currently signed in. A claim proves *which card was
+  scanned* — it grants no vault or signing access, so the member's PIN is still
+  required for balance, voting and proposal creation.
+- PIN brute-force counters are stored per **card**, not per session, so
+  re-tapping a card cannot be used to reset the 5-attempt / 60-second lockout.
+
 ## 15) Encryption & Key Management
 
 ### Implemented in current codebase
@@ -178,7 +207,7 @@ Primary contract: `backend/contracts/OffGridDAO.sol`
 Events emitted:
 - `init`
 - `proposals-updated`
-- `card-scanned`
+- `card-scanned` (carries a single-use claim; never session material)
 - `vote-recorded`
 
 This enables live dashboards, instant vote updates, and transaction feed synchronization across clients.

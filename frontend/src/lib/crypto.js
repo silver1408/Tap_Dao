@@ -1,7 +1,9 @@
 import CryptoJS from "crypto-js";
 
-// IMPORTANT: Keep this secret safe (use env in production)
-const SECRET_KEY = "your-very-strong-secret-key";
+// Must match the backend (backend/lib/crypto.js). Configure both sides with the
+// same value; the fallback keeps the demo working without any .env file.
+const SECRET_KEY =
+  import.meta.env.VITE_CRYPTO_SECRET_KEY || "your-very-strong-secret-key";
 
 export function encrypt(text) {
   if (!text) return "";

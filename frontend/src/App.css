@@ -1506,6 +1506,14 @@ select:focus {
 .ai-preview-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
 .ai-preview-actions button { flex: 1; }
 
+/* ── AI Provider Status ── */
+.ai-status-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; font-size: 0.8rem; color: var(--ink-muted); }
+.ai-status-row > span:nth-child(2) { flex: 1; }
+.ai-status-row .secondary-btn { padding: 0.25rem 0.6rem; min-height: auto; font-size: 0.75rem; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #adb5bd; }
+.status-dot.ok { background: #198754; }
+.status-dot.off { background: #dc3545; }
+
 /* ── Themes (Using Data attributes or classes) ── */
 :root { --bg: #ffffff; --surface: #ffffff; --border: #e9ecef; --text: #212529; --text-muted: #6c757d; }
 .app-shell.theme-light { --bg: #f8f9fa; --surface: #ffffff; --border: #dee2e6; --text: #212529; --text-muted: #6c757d; }

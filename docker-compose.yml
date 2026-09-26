@@ -45,6 +45,23 @@ services:
       PORT: 9200
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
+      # Persistent state (NFC cards, wallet slots, proposal images, sessions)
+      # lives in /app/runtime, which is the runtime-data volume below.
+      DATA_DIR: /app/runtime
+      # Uploaded images: the ./backend bind mount already keeps ./backend/uploads
+      # on the host, so files survive container recreation.
+      UPLOAD_DIR: /app/uploads
+      # AI Assist provider (server-side only; the browser never sees this).
+      COLAB_AI_URL: ""
+      # Transport/session settings.
+      CRYPTO_SECRET_KEY: 4dc4acda5671ad45a7ff926cbdd4ae15c385f5a82ba6f9869e568a5a4ab7fd6b
+      SESSION_SECRET: 4ab27a7df264277632e2f141d937288dc2d0d21e28373719c3d3d7e380ce7562
+      SESSION_COOKIE_NAME: tapdao_sid
+      SESSION_IDLE_TTL_MS: "1800000"
+      SESSION_ABSOLUTE_TTL_MS: "43200000"
+      COOKIE_SECURE: auto
+      MAX_UPLOAD_BYTES: "52427880"
+      CORS_ALLOWED_ORIGINS: "https://tap.kiyoai.in,http://localhost:9100,http://127.0.0.1:9100"
     working_dir: /app
     volumes:
       - ./backend:/app
@@ -52,6 +69,14 @@ services:
       - runtime-data:/app/runtime
     ports:
       - "9200:9200"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get({hostname:'127.0.0.1',port:9200,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     command: sh -c "npm install && npm run dev"
 
   frontend:
@@ -61,10 +86,13 @@ services:
     working_dir: /app
     depends_on:
       app:
-        condition: service_started
+        condition: service_healthy
     environment:
-      VITE_API_URL: http://localhost:9200
-      VITE_SOCKET_URL: http://localhost:9200
+      # Same-origin setup: the Vite dev server proxies API + socket traffic to
+      # the backend, so LAN phones and the Cloudflare tunnel keep working.
+      VITE_PROXY_TARGET: http://app:9200
+      VITE_CRYPTO_SECRET_KEY: 4dc4acda5671ad45a7ff926cbdd4ae15c385f5a82ba6f9869e568a5a4ab7fd6b
+      VITE_AI_TIMEOUT_MS: "100000"
     volumes:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules

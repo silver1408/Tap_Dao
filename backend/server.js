@@ -8,16 +8,38 @@ const fs = require("fs");
 const { ethers } = require("ethers");
 const crypto = require("crypto");
 const QRCode = require("qrcode");
+const multer = require("multer");
 const {
   summarizeProposalProblem,
   generateProposalFromDescription,
-  OLLAMA_MODEL,
-  FEATHERLESS_MODEL,
+  checkAiHealth,
+  aiConfig,
+  AiServiceError,
 } = require("./services/proposalSummaryService");
+const { createStore, installShutdownFlush } = require("./lib/jsonStore");
+const { createSessionManager } = require("./lib/sessionManager");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+app.disable("x-powered-by");
+app.set("trust proxy", true);
+
+const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(null, false);
+    },
+    credentials: true,
+  }),
+);
+app.use(express.json({ limit: "256kb" }));
 
 // Serve built frontend (from frontend/dist/) at root — this is the kiosk UI
 const frontendDistPath = path.join(__dirname, "..", "frontend", "dist");
@@ -27,29 +49,70 @@ if (fs.existsSync(frontendDistPath)) {
 
 // Legacy static files (backend/public for uploads etc)
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Image upload setup
-const multer = require("multer");
-const uploadDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir);
-}
+// ── PERSISTENT STATE (survives restarts / container restarts) ──
+const store = createStore();
+const storeInfo = store.load();
+installShutdownFlush(store);
+
+const uploadDir = process.env.UPLOAD_DIR
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : path.join(__dirname, "uploads");
+fs.mkdirSync(uploadDir, { recursive: true });
+
+app.use(
+  "/uploads",
+  express.static(uploadDir, {
+    index: false,
+    dotfiles: "deny",
+    fallthrough: false,
+    setHeaders(res) {
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    },
+  }),
+);
+
+// ── IMAGE UPLOAD (allow-listed raster formats only) ──
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 5 * 1024 * 1024);
+const ALLOWED_IMAGE_TYPES = new Map([
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/webp", ".webp"],
+  ["image/gif", ".gif"],
+  ["image/avif", ".avif"],
+]);
+
 const storage = multer.diskStorage({
   destination: function (_req, _file, cb) {
     cb(null, uploadDir);
   },
   filename: function (_req, file, cb) {
-    cb(null, Date.now() + path.extname(file.originalname));
+    const ext = ALLOWED_IMAGE_TYPES.get(file.mimetype) || ".bin";
+    cb(null, `${Date.now()}-${crypto.randomBytes(8).toString("hex")}${ext}`);
   },
 });
-const upload = multer({ storage });
 
-// In-memory map for proposal images (contract doesn't store imageUrl)
-const proposalImages = {};
+const upload = multer({
+  storage,
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 4 },
+  fileFilter: function (_req, file, cb) {
+    if (!ALLOWED_IMAGE_TYPES.has(file.mimetype)) {
+      const error = new Error(
+        `Unsupported image type "${file.mimetype}". Allowed: JPEG, PNG, WebP, GIF, AVIF.`,
+      );
+      error.status = 400;
+      return cb(error);
+    }
+    return cb(null, true);
+  },
+});
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, { cors: { origin: "*", credentials: true } });
 
 const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
 const addressFilePath =
@@ -89,20 +152,150 @@ if (contractAddress) {
   daoContract = new ethers.Contract(contractAddress, contractAbi, provider);
 }
 
-// Admin signer (Hardhat Account #0) for creating proposals and funding wallets
-const ADMIN_KEY =
+const DEV_ADMIN_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const DEV_HARDHAT_KEYS = [
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+  "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+  "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
+  "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
+  "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+  "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+  "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
+  "0xf214f2b2cd398c806f84e317254e0f0b801d0643303237d97a22a48e01628897",
+  "0x701b615bbdfb9de65240bc28bd21bbc0d996645a3dd57e7b12bc2bdf6f192c82",
+  "0xa267530f49f8280200edf313ee7af6b827f2a8bce2897751d06a843f644967b1",
+  "0x47c99abed3324a2707c28affff1267e45918ec8c3f20b8aa892e8b065d2942dd",
+  "0xc526ee95bf44d8fc405a158bb884d9d1238d99f0612e9f33d006bb0789009aaa",
+  "0x8166f546bab6da521a8369cab06c5d2b9e46670292d85c875ee9ec20e84ffb61",
+  "0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0",
+  "0x689af8efa8c651a91ad287602527f3af2fe9f6501a7ac4b061667b5a93e037fd",
+  "0xde9be858da4a475276426320d5e9262ecfc3ba460bfac56360bfa6c4c28b4ee0",
+  "0xdf57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e",
+];
+
+function parseKeyList(raw) {
+  if (!raw) return [];
+  return raw
+    .split(/[\s,]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => (value.startsWith("0x") ? value : `0x${value}`));
+}
+
+const ADMIN_KEY = process.env.ADMIN_PRIVATE_KEY || DEV_ADMIN_KEY;
+const VOTER_KEYS = parseKeyList(process.env.VOTER_PRIVATE_KEYS).length
+  ? parseKeyList(process.env.VOTER_PRIVATE_KEYS)
+  : DEV_HARDHAT_KEYS;
+const USING_DEV_KEYS = ADMIN_KEY === DEV_ADMIN_KEY || !process.env.VOTER_PRIVATE_KEYS;
+
 const adminSigner = new ethers.Wallet(ADMIN_KEY, provider);
 let adminContract;
 if (daoContract) {
   adminContract = daoContract.connect(adminSigner);
 }
 
-// Transaction Feed history cache
-const transactionFeed = [];
+// ─────────────────────────────────────────────
+//  SESSIONS (server-side, signed httpOnly cookie)
+// ─────────────────────────────────────────────
+
+const sessions = createSessionManager({
+  store,
+  secret: process.env.SESSION_SECRET,
+  cookieName: process.env.SESSION_COOKIE_NAME || "tapdao_sid",
+  idleTtlMs: Number(process.env.SESSION_IDLE_TTL_MS || 0) || undefined,
+  absoluteTtlMs: Number(process.env.SESSION_ABSOLUTE_TTL_MS || 0) || undefined,
+});
+sessions.startReaper();
+
+function wantsSecureCookie(req) {
+  const flag = (process.env.COOKIE_SECURE || "auto").toLowerCase();
+  if (flag === "true") return true;
+  if (flag === "false") return false;
+  const forwarded = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  return Boolean(req.secure) || forwarded === "https";
+}
+
+function currentSession(req) {
+  return sessions.activeFromRequest(req);
+}
+
+function claimedHandle(req) {
+  const header = req.headers["x-session-handle"];
+  if (typeof header === "string" && header.trim()) return header.trim();
+  return null;
+}
+
+/**
+ * Resolves the session a request may act with, distinguishing the three ways a
+ * kiosk session can be unusable:
+ *   - no/expired session            → 401 SESSION_EXPIRED
+ *   - replaced by another card tap  → 409 SESSION_SUPERSEDED
+ *   - client believes in another session (shared kiosk) → 409 SESSION_SUPERSEDED
+ */
+function authorizeSession(req, res) {
+  const raw = sessions.fromRequest(req);
+  if (!raw) {
+    sendEncrypted(res, 401, {
+      error: "Session expired. Tap your card to continue.",
+      code: "SESSION_EXPIRED",
+    });
+    return null;
+  }
+  if (raw.superseded) {
+    sessions.clear(res, wantsSecureCookie(req));
+    sendEncrypted(res, 409, {
+      error: "Another member signed in on this kiosk.",
+      code: "SESSION_SUPERSEDED",
+    });
+    return null;
+  }
+  const handle = claimedHandle(req);
+  if (!handle) {
+    // `sendEncrypted` returns the Express response, so it must never be the
+    // return value of this function — callers treat a truthy result as a
+    // usable session.
+    sendEncrypted(res, 401, {
+      error: "No active session",
+      code: "SESSION_UNCLAIMED",
+    });
+    return null;
+  }
+  if (!sessions.handleMatches(raw, handle)) {
+    sendEncrypted(res, 409, {
+      error: "Another member signed in on this kiosk.",
+      code: "SESSION_SUPERSEDED",
+    });
+    return null;
+  }
+  return raw;
+}
+
+function issueSession(req, res, cardId) {
+  const previous = sessions.fromRequest(req);
+  const session = sessions.issue(cardId);
+  sessions.attach(res, session, wantsSecureCookie(req));
+  if (previous && previous.record.cardId !== cardId) {
+    logSessionSwitch(previous.record.cardId, cardId);
+  }
+  return session;
+}
+
+function logSessionSwitch(fromCardId, toCardId) {
+  const from = getVoter(fromCardId);
+  const to = getVoter(toCardId);
+  console.log(
+    `🔁 Kiosk session handed over: ${from ? from.name : fromCardId} → ${to ? to.name : toCardId}`,
+  );
+}
 
 // ─────────────────────────────────────────────
-//  DYNAMIC VOTER REGISTRY (Any NFC card can register)
+//  DYNAMIC VOTER REGISTRY (persistent)
 // ─────────────────────────────────────────────
 
 // Stateless PIN encryption
@@ -129,42 +322,63 @@ function decryptPayload(encryptedObj, pin) {
   return decrypted;
 }
 
-// Dynamic voters map: cardId → { name, avatar, wallet, encryptedPayload, ward }
-const voters = new Map();
-
-// Hardhat account index counter — we'll use accounts #1+ for voters
-// (Account #0 is admin)
-let nextAccountIndex = 1;
-
-// Pre-defined Hardhat private keys (accounts #1 through #19)
-const HARDHAT_KEYS = [
-  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
-  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
-  "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
-  "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
-  "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
-  "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
-  "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
-  "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
-  "0xf214f2b2cd398c806f84e317254e0f0b801d0643303237d97a22a48e01628897",
-  "0x701b615bbdfb9de65240bc28bd21bbc0d996645a3dd57e7b12bc2bdf6f192c82",
-  "0xa267530f49f8280200edf313ee7af6b827f2a8bce2897751d06a843f644967b1",
-  "0x47c99abed3324a2707c28affff1267e45918ec8c3f20b8aa892e8b065d2942dd",
-  "0xc526ee95bf44d8fc405a158bb884d9d1238d99f0612e9f33d006bb0789009aaa",
-  "0x8166f546bab6da521a8369cab06c5d2b9e46670292d85c875ee9ec20e84ffb61",
-  "0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0",
-  "0x689af8efa8c651a91ad287602527f3af2fe9f6501a7ac4b061667b5a93e037fd",
-  "0xde9be858da4a475276426320d5e9262ecfc3ba460bfac56360bfa6c4c28b4ee0",
-  "0xdf57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e",
-];
-
 function getVoter(cardId) {
-  return voters.get(cardId) || null;
+  if (!cardId) return null;
+  return store.getState().voters[cardId] || null;
 }
 
-// Per-socket voter sessions
-const socketSessions = new Map(); // socketId → { cardId, voter }
+function listVoters() {
+  return Object.values(store.getState().voters);
+}
+
+function saveVoter(voter) {
+  store.mutate((state) => {
+    state.voters[voter.cardId] = voter;
+  });
+  return voter;
+}
+
+function allocateWalletSlot() {
+  const used = new Set(
+    listVoters()
+      .map((voter) => (voter.wallet || "").toLowerCase())
+      .filter(Boolean),
+  );
+  for (const privateKey of VOTER_KEYS) {
+    let address;
+    try {
+      address = new ethers.Wallet(privateKey).address;
+    } catch (_error) {
+      continue;
+    }
+    if (!used.has(address.toLowerCase())) {
+      return { privateKey, address };
+    }
+  }
+  return null;
+}
+
+function getProposalImage(proposalId) {
+  const record = store.getState().proposalImages[String(proposalId)];
+  return record ? record.imageUrl : "";
+}
+
+function saveProposalImage(proposalId, imageUrl) {
+  store.mutate((state) => {
+    state.proposalImages[String(proposalId)] = {
+      imageUrl,
+      createdAt: new Date().toISOString(),
+    };
+  });
+}
+
+function listInvites() {
+  return store.getState().invites;
+}
+
+function addTransaction(entry) {
+  return store.pushTransaction(entry);
+}
 
 // Helper to read all proposals from blockchain
 async function readAllProposals() {
@@ -182,7 +396,7 @@ async function readAllProposals() {
         fundsRequested: Number(p.fundsRequested),
         votes: Number(p.votes),
         status: p.active ? "active" : "inactive",
-        imageUrl: proposalImages[Number(p.id)] || "",
+        imageUrl: getProposalImage(Number(p.id)),
       });
     }
   } catch (e) {
@@ -242,6 +456,92 @@ function readEncryptedBody(req) {
 }
 
 // ─────────────────────────────────────────────
+//  SESSION-AWARE PIN AUTHORISATION
+// ─────────────────────────────────────────────
+
+function publicVoter(voter, extra = {}) {
+  return {
+    name: voter.name,
+    avatar: voter.avatar,
+    wallet: voter.wallet,
+    ward: voter.ward,
+    cardId: voter.cardId,
+    registeredAt: voter.registeredAt,
+    ...extra,
+  };
+}
+
+/**
+ * Resolves the wallet vault for a PIN-gated action.
+ * Prefers the server-side session (the encrypted payload never leaves the
+ * server) and only falls back to a client-supplied payload for the legacy
+ * stateless API shape.
+ */
+function resolveVault(req, session, data) {
+  if (session && session.record) {
+    const voter = getVoter(session.record.cardId);
+    if (voter && voter.encryptedPayload) {
+      return { voter, encryptedPayload: voter.encryptedPayload };
+    }
+  }
+  if (data && data.encryptedPayload && data.cardId) {
+    const voter = getVoter(data.cardId);
+    if (voter) return { voter, encryptedPayload: data.encryptedPayload };
+  }
+  if (data && data.encryptedPayload) {
+    return { voter: null, encryptedPayload: data.encryptedPayload };
+  }
+  return null;
+}
+
+/**
+ * Defence in depth for the shared kiosk: a stale client that still believes it
+ * is another member must never unlock that member's wallet, even if it somehow
+ * carries the current cookie.
+ */
+function sessionCardMatches(session, data) {
+  if (!session || !session.record) return true;
+  const claimed = data && typeof data.cardId === "string" ? data.cardId.trim() : "";
+  if (!claimed) return true; // legacy clients that omit cardId
+  return claimed === session.record.cardId;
+}
+
+function requireSession(req, res) {
+  return authorizeSession(req, res);
+}
+
+function sendPinError(res, session) {
+  if (session && sessions.isPinLocked(session)) {
+    const lock = store.getState().pinLocks[session.record.cardId];
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((Number(lock && lock.lockedUntil) - Date.now()) / 1000),
+    );
+    return sendEncrypted(res, 429, {
+      error: `Too many incorrect PIN attempts. Try again in ${retryAfterSeconds}s.`,
+      code: "PIN_LOCKED",
+    });
+  }
+  return null;
+}
+
+function unlockWithPin(session, pin, encryptedPayload) {
+  let privateKey;
+  try {
+    privateKey = decryptPayload(encryptedPayload, pin);
+  } catch (_error) {
+    if (session) sessions.registerPinFailure(session);
+    return null;
+  }
+  if (session) sessions.clearPinFailures(session);
+  try {
+    return new ethers.Wallet(privateKey, provider);
+  } catch (_error) {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 //  API ROUTES
 // ─────────────────────────────────────────────
 
@@ -251,7 +551,24 @@ app.post("/upload", upload.single("image"), (req, res) => {
     return res.status(400).json({ error: "No image file provided." });
   }
   const fileUrl = `/uploads/${req.file.filename}`;
-  return res.json({ imageUrl: fileUrl });
+  return res.json({ imageUrl: fileUrl, bytes: req.file.size });
+});
+
+app.get("/health", (req, res) => {
+  return res.json({
+    status: "ok",
+    port,
+    contract: contractAddress || null,
+    registeredCards: listVoters().length,
+    storage: { dataFile: store.file, uploads: uploadDir },
+    ai: aiConfig(),
+    uptimeSeconds: Math.round(process.uptime()),
+  });
+});
+
+// AI provider status (no credentials are ever returned)
+app.get("/ai/status", async (req, res) => {
+  return res.json(await checkAiHealth());
 });
 
 app.get("/contract", (req, res) => {
@@ -269,6 +586,131 @@ app.get("/contract", (req, res) => {
     abi: contractAbi,
     rpcUrl,
     deployedAt: deploymentMetadata && deploymentMetadata.deployedAt,
+  });
+});
+
+// ── Session lifecycle ──
+app.get("/session", (req, res) => {
+  const raw = sessions.fromRequest(req);
+  const handle = claimedHandle(req);
+
+  if (!raw || raw.superseded) {
+    sessions.clear(res, wantsSecureCookie(req));
+    return sendEncrypted(res, 401, {
+      error: "No active session",
+      code: raw ? "SESSION_SUPERSEDED" : "SESSION_UNCLAIMED",
+    });
+  }
+
+  // A kiosk that cannot say which session it holds (fresh page load, or a
+  // different member at the same device) must never inherit it, and a handle
+  // that names a different session means this one was taken over.
+  if (!handle) {
+    return sendEncrypted(res, 401, {
+      error: "No active session",
+      code: "SESSION_UNCLAIMED",
+    });
+  }
+  if (!sessions.handleMatches(raw, handle)) {
+    return sendEncrypted(res, 409, {
+      error: "Another member signed in on this kiosk.",
+      code: "SESSION_SUPERSEDED",
+    });
+  }
+
+  const voter = getVoter(raw.record.cardId);
+  if (!voter) {
+    sessions.revoke(raw.id);
+    sessions.clear(res, wantsSecureCookie(req));
+    return sendEncrypted(res, 401, {
+      error: "Card is no longer registered",
+      code: "SESSION_EXPIRED",
+    });
+  }
+  sessions.touch(raw.id);
+  return sendEncrypted(res, 200, {
+    voter: publicVoter(voter),
+    session: sessions.publicView({ id: raw.id, record: sessions.get(raw.id) }),
+  });
+});
+
+app.post("/session/touch", (req, res) => {
+  const session = requireSession(req, res);
+  if (!session) return undefined;
+  const record = sessions.touch(session.id);
+  if (!record) {
+    sessions.clear(res, wantsSecureCookie(req));
+    return sendEncrypted(res, 401, {
+      error: "Session expired. Tap your card to continue.",
+      code: "SESSION_EXPIRED",
+    });
+  }
+  sessions.attach(res, { id: session.id, record }, wantsSecureCookie(req));
+  return sendEncrypted(res, 200, { session: sessions.publicView({ id: session.id, record }) });
+});
+
+/**
+ * Signs the kiosk out. Always clears the cookie and always succeeds, even when
+ * the session is already gone, so the next member starts from a clean slate.
+ */
+app.post("/session/logout", (req, res) => {
+  const handle = claimedHandle(req);
+  const raw = sessions.fromRequest(req);
+  const logoutBody = readEncryptedBody(req) || {};
+  markSocketSession(logoutBody.socketId, null);
+  if (raw) {
+    // Revoke whatever the cookie points at: after a handover the cookie may
+    // belong to another member, and leaving it alive would let the next person
+    // inherit their session.
+    if (handle && !sessions.handleMatches(raw, handle)) {
+      console.warn("⚠️  Logout presented a stale session handle — dropping the cookie session anyway.");
+    }
+    sessions.revoke(raw.id);
+  }
+  sessions.clear(res, wantsSecureCookie(req));
+  console.log("👋 Kiosk session signed out");
+  return sendEncrypted(res, 200, { success: true });
+});
+
+/**
+ * Exchanges a scan claim for a first-class session on the kiosk itself.
+ * Scans are usually triggered from a member's phone, so the kiosk browser never
+ * received the Set-Cookie and previously could not authenticate at all (hence
+ * the endless "Session Expired" on PIN-gated actions). The claim is single-use
+ * and short-lived, and only proves which card was scanned: every sensitive
+ * action still requires the member's PIN.
+ */
+app.post("/session/claim", (req, res) => {
+  const data = readEncryptedBody(req);
+  if (!data) {
+    return sendEncrypted(res, 400, { error: "Invalid encrypted payload" });
+  }
+
+  const claim = sessions.consumeClaim(data.claim);
+  if (!claim) {
+    return sendEncrypted(res, 401, {
+      error: "This scan has already been used or expired. Tap your card again.",
+      code: "CLAIM_INVALID",
+    });
+  }
+
+  const voter = getVoter(claim.cardId);
+  if (!voter) {
+    return sendEncrypted(res, 404, {
+      error: "Card is no longer registered",
+      code: "CARD_UNKNOWN",
+    });
+  }
+
+  // The kiosk is now this member's device: take the session over from whoever
+  // was signed in before.
+  const session = issueSession(req, res, claim.cardId);
+
+  markSocketSession(data.socketId, claim.cardId);
+
+  return sendEncrypted(res, 200, {
+    voter: publicVoter(voter, { tokenBalance: null }),
+    session: sessions.publicView(session),
   });
 });
 
@@ -296,87 +738,98 @@ app.post("/register", async (req, res) => {
   }
 
   const { cardId, name, pin } = data;
-  if (!cardId || !pin || pin.length < 4) {
+  if (typeof cardId !== "string" || !cardId.trim() || cardId.length > 128) {
+    return sendEncrypted(res, 400, { error: "A valid cardId is required" });
+  }
+  if (typeof pin !== "string" || pin.length < 4 || pin.length > 32) {
     return sendEncrypted(res, 400, {
       error: "cardId and a 4-digit pin are required",
     });
   }
 
+  const normalizedCardId = cardId.trim();
+
   // Check if already registered
-  if (voters.has(cardId)) {
+  const existing = getVoter(normalizedCardId);
+  if (existing) {
     return sendEncrypted(res, 409, {
       error: "This card is already registered",
-      voter: { name: voters.get(cardId).name, cardId },
+      voter: { name: existing.name, cardId: normalizedCardId },
     });
   }
 
-  // Get next Hardhat private key
-  if (nextAccountIndex > HARDHAT_KEYS.length) {
-    return sendEncrypted(res, 500, {
-      error: "No more wallet slots available (max 19 voters)",
+  const slot = allocateWalletSlot();
+  if (!slot) {
+    return sendEncrypted(res, 503, {
+      error: `No free wallet slot left (max ${VOTER_KEYS.length} voters). Increase VOTER_PRIVATE_KEYS to onboard more members.`,
+      code: "NO_WALLET_SLOT",
     });
   }
 
-  const privateKey = HARDHAT_KEYS[nextAccountIndex - 1];
-  nextAccountIndex++;
-
-  const wallet = new ethers.Wallet(privateKey, provider);
-  const voterName = name || `Voter ${cardId.slice(-4)}`;
+  const voterName =
+    (typeof name === "string" && name.trim()) ||
+    `Voter ${normalizedCardId.slice(-4)}`;
 
   // Encrypt private key with user's PIN
-  const encPayload = encryptPayload(privateKey, pin);
+  const encPayload = encryptPayload(slot.privateKey, pin);
+
+  // Persist immediately so a concurrent duplicate request cannot claim the
+  // same card (the async token allocation below yields the event loop).
+  const voterData = saveVoter({
+    name: voterName.slice(0, 80),
+    avatar: "🧑",
+    wallet: slot.address,
+    encryptedPayload: encPayload,
+    ward: "Community Member",
+    cardId: normalizedCardId,
+    registeredAt: new Date().toISOString(),
+  });
+  console.log(`✅ Card registered: ${normalizedCardId} → ${voterName}`);
 
   // Allocate tokens on-chain
+  let tokenBalance = 0;
   try {
-    console.log(`🪙 Registering card "${cardId}" as "${voterName}" → ${wallet.address}`);
-    const alreadyInitialized = await daoContract.isInitialized(wallet.address);
+    console.log(`🪙 Allocating tokens to ${slot.address} for "${voterName}"`);
+    const alreadyInitialized = await daoContract.isInitialized(slot.address);
     if (!alreadyInitialized) {
-      const allocTx = await adminContract.allocateTokens(wallet.address, 1000);
+      const allocTx = await adminContract.allocateTokens(slot.address, 1000);
       await allocTx.wait();
-      console.log(`✅ 1000 tokens allocated to ${wallet.address}`);
+      console.log(`✅ 1000 tokens allocated to ${slot.address}`);
     }
+    tokenBalance = Number(await daoContract.getTokenBalance(slot.address));
   } catch (e) {
     console.error("Token allocation error:", e.reason || e.message);
   }
 
-  // Store voter
-  const voterData = {
-    name: voterName,
-    avatar: "🧑",
-    wallet: wallet.address,
-    encryptedPayload: encPayload,
-    ward: "Community Member",
-    cardId,
-  };
-  voters.set(cardId, voterData);
-
-  console.log(`✅ Card registered: ${cardId} → ${voterName}`);
+  const session = issueSession(req, res, normalizedCardId);
+  markSocketSession(req.query && req.query.socketId, normalizedCardId);
 
   // Broadcast registration event
   io.emit("voter-registered", {
-    cardId,
+    cardId: normalizedCardId,
     name: voterName,
-    wallet: wallet.address,
-    registeredVoters: voters.size,
+    wallet: slot.address,
+    registeredVoters: listVoters().length,
   });
 
   return sendEncrypted(res, 200, {
     success: true,
-    voter: {
-      name: voterName,
-      wallet: wallet.address,
-      cardId,
-      encryptedPayload: encPayload,
-      tokenBalance: 1000,
-    },
+    voter: publicVoter(voterData, { tokenBalance }),
+    session: sessions.publicView(session),
   });
 });
+
+// ─────────────────────────────────────────────
+//  PROPOSALS
+// ─────────────────────────────────────────────
 
 // Get all proposals from the SMART CONTRACT
 app.get("/proposals", async (req, res) => {
   if (!ensureContractReady(res)) return;
   return sendEncrypted(res, 200, await readAllProposals());
 });
+
+const IMAGE_URL_PATTERN = /^\/uploads\/[A-Za-z0-9._-]+$/;
 
 // Create a new proposal (costs 200 tokens: deducted from creator)
 app.post("/proposals", async (req, res) => {
@@ -388,35 +841,59 @@ app.post("/proposals", async (req, res) => {
     });
   }
 
-  const { title, description, category, fundsRequested, imageUrl, encryptedPayload, pin } = data;
-  if (!title || !fundsRequested) {
+  const { title, description, category, fundsRequested, imageUrl, pin, cardId } = data;
+  if (typeof title !== "string" || !title.trim() || !fundsRequested) {
     return sendEncrypted(res, 400, {
       error: "Missing title or fundsRequested",
     });
   }
 
-  if (!encryptedPayload || !pin) {
+  if (typeof pin !== "string" || !pin) {
     return sendEncrypted(res, 400, {
-      error: "Missing encryptedPayload or pin to authorize creation fee",
+      error: "Missing PIN to authorize creation fee",
     });
   }
 
-  let decryptedPrivateKey;
-  try {
-    decryptedPrivateKey = decryptPayload(encryptedPayload, pin);
-  } catch (e) {
-    console.error("❌ Proposal creation failed: Wrong PIN!");
-    return sendEncrypted(res, 401, { error: "Incorrect PIN. Vault failed to open." });
+  if (imageUrl && !IMAGE_URL_PATTERN.test(String(imageUrl))) {
+    return sendEncrypted(res, 400, { error: "Invalid imageUrl" });
   }
 
-  const signer = new ethers.Wallet(decryptedPrivateKey, provider);
+  const session = requireSession(req, res);
+  if (!session) return undefined;
+  if (!sessionCardMatches(session, data)) {
+    return sendEncrypted(res, 409, {
+      error: "Another member signed in on this kiosk.",
+      code: "SESSION_SUPERSEDED",
+    });
+  }
+
+  const vault = resolveVault(req, session, data);
+  if (!vault) {
+    return sendEncrypted(res, 401, {
+      error: "Session expired. Tap your card to continue.",
+      code: "SESSION_EXPIRED",
+    });
+  }
+
+  const locked = sendPinError(res, session);
+  if (locked) return locked;
+
+  const signer = unlockWithPin(session, pin, vault.encryptedPayload);
+  if (!signer) {
+    console.error("❌ Proposal creation failed: Wrong PIN!");
+    return sendEncrypted(res, 401, {
+      error: "Incorrect PIN. Vault failed to open.",
+      code: "PIN_INVALID",
+    });
+  }
+
   const connectedContract = daoContract.connect(signer);
 
   try {
     console.log(`📝 Creating new proposal using signer ${signer.address}...`);
     const tx = await connectedContract.createProposal(
-      title,
-      description || "",
+      title.trim().slice(0, 200),
+      (description || "").slice(0, 5000),
       category || "General",
       fundsRequested,
     );
@@ -426,7 +903,7 @@ app.post("/proposals", async (req, res) => {
     // Store image URL server-side (contract doesn't support it)
     const newCount = Number(await daoContract.proposalCount());
     if (imageUrl) {
-      proposalImages[newCount] = imageUrl;
+      saveProposalImage(newCount, imageUrl);
     }
 
     // Explicitly emit vote event for the creator (since they are now part of the 1 vote)
@@ -438,25 +915,22 @@ app.post("/proposals", async (req, res) => {
       category: p.category,
       fundsRequested: Number(p.fundsRequested),
       votes: Number(p.votes),
-      imageUrl: proposalImages[Number(p.id)] || "",
+      imageUrl: getProposalImage(Number(p.id)),
       status: p.active ? "active" : "inactive",
     };
 
-    const txEntry = {
-      id: transactionFeed.length + 1,
+    const txEntry = addTransaction({
       type: "VOTE_CAST", // It acts as a vote
       hash: tx.hash,
-      timestamp: new Date().toISOString(),
-    };
-    transactionFeed.push(txEntry);
+    });
 
     const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
 
     // Emit the vote-recorded so it pushes up to frontend instantly
     io.emit("vote-recorded", {
-       voter: { name: "Creator", wallet: signer.address, tokenBalance: updatedBalance },
-       proposal: proposalObj,
-       transaction: txEntry,
+      voter: { name: "Creator", wallet: signer.address, tokenBalance: updatedBalance },
+      proposal: proposalObj,
+      transaction: txEntry,
     });
 
     // Re-read all proposals and broadcast to all dashboards
@@ -470,10 +944,25 @@ app.post("/proposals", async (req, res) => {
   } catch (e) {
     console.error("❌ Failed to create proposal:", e.reason || e.message);
     return sendEncrypted(res, 500, {
-      error: e.reason || "Failed to create proposal. Ensure you have 200 tokens and haven't voted.",
+      error:
+        e.reason ||
+        "Failed to create proposal. Ensure you have 200 tokens and haven't voted.",
     });
   }
 });
+
+function sendAiError(res, error) {
+  const status = error instanceof AiServiceError ? error.status : 502;
+  const code = error instanceof AiServiceError ? error.code : "AI_ERROR";
+  const isConfigIssue = code === "AI_NOT_CONFIGURED";
+  console.error(`❌ AI request failed [${code}]: ${error.message}`);
+  return sendEncrypted(res, status, {
+    error: isConfigIssue
+      ? "AI Assist is not configured on the server. Ask the operator to set COLAB_AI_URL."
+      : error.message,
+    code,
+  });
+}
 
 app.post("/proposals/summarize-problem", async (req, res) => {
   const data = readEncryptedBody(req);
@@ -494,24 +983,18 @@ app.post("/proposals/summarize-problem", async (req, res) => {
   }
 
   try {
-    const summary = await summarizeProposalProblem({
+    const { summary, model } = await summarizeProposalProblem({
       title,
       description,
     });
 
-    return sendEncrypted(res, 200, {
-      summary,
-      model: OLLAMA_MODEL,
-    });
+    return sendEncrypted(res, 200, { summary, model });
   } catch (error) {
-    console.error("❌ Summary generation failed:", error.message);
-    return sendEncrypted(res, 502, {
-      error: "Could not generate proposal summary",
-    });
+    return sendAiError(res, error);
   }
 });
 
-// AI Proposal Generation (Featherless AI)
+// AI Proposal Generation
 app.post("/proposals/generate", async (req, res) => {
   const data = readEncryptedBody(req);
   if (!data) {
@@ -530,24 +1013,21 @@ app.post("/proposals/generate", async (req, res) => {
   }
 
   try {
-    console.log(`🤖 Generating proposal from: "${userText.slice(0, 80)}..."`);
     const generated = await generateProposalFromDescription(userText);
     console.log(`✅ AI generated proposal: "${generated.title}"`);
 
     return sendEncrypted(res, 200, generated);
   } catch (error) {
-    console.error("❌ Proposal generation failed:", error.message);
-    return sendEncrypted(res, 502, {
-      error: error.message || "Could not generate proposal",
-    });
+    return sendAiError(res, error);
   }
 });
 
-// NFC Scan → Identify Voter (triggered by iOS Shortcut / Android NFC app)
-// Now supports per-socket sessions via optional socketId param
+// ─────────────────────────────────────────────
+//  NFC SCAN → Identify Voter
+// ─────────────────────────────────────────────
 app.get("/scan", async (req, res) => {
   if (!ensureContractReady(res)) return;
-  const cardId = req.query.cardId || "Unknown_Card";
+  const cardId = String(req.query.cardId || "Unknown_Card").trim();
   const socketId = req.query.socketId || null;
   console.log(`\n📡 NFC SCAN DETECTED: ${cardId}`);
 
@@ -562,11 +1042,7 @@ app.get("/scan", async (req, res) => {
       cardId,
     };
 
-    if (socketId && io.sockets.sockets.get(socketId)) {
-      io.to(socketId).emit("card-scanned", payload);
-    } else {
-      io.emit("card-scanned", payload);
-    }
+    emitCardScanned(socketId, payload);
 
     return sendEncrypted(res, 200, {
       success: true,
@@ -576,7 +1052,6 @@ app.get("/scan", async (req, res) => {
   }
 
   // Known card — read balance and emit to connected clients
-  let tokenBalance = 0;
   try {
     const alreadyInitialized = await daoContract.isInitialized(voter.wallet);
     if (!alreadyInitialized) {
@@ -584,53 +1059,77 @@ app.get("/scan", async (req, res) => {
       const allocTx = await adminContract.allocateTokens(voter.wallet, 1000);
       await allocTx.wait();
     }
-    tokenBalance = Number(await daoContract.getTokenBalance(voter.wallet));
   } catch (e) {
     console.error("Balance read error:", e.reason || e.message);
   }
 
-  const txEntry = {
-    id: transactionFeed.length + 1,
-    type: "IDENTITY_VERIFY",
-    hash:
-      "0x" +
-      crypto
-        .createHash("md5")
-        .update("identity" + Date.now())
-        .digest("hex")
-        .slice(0, 40),
-    timestamp: new Date().toISOString(),
-  };
-  transactionFeed.push(txEntry);
+  const txEntry = addTransaction({ type: "IDENTITY_VERIFY", hash: identityHash() });
+  store.mutate((state) => {
+    state.voters[cardId] = { ...voter, lastSeenAt: new Date().toISOString() };
+  });
 
+  const session = issueSession(req, res, cardId);
+  markSocketSession(socketId, cardId);
+
+  // The HTTP caller (kiosk-side scan) gets a cookie. A scan triggered from a
+  // member's phone gets a single-use claim instead, which the kiosk exchanges
+  // for its own isolated session — no session material is broadcast.
+  const claim = sessions.issueClaim(cardId);
   const scanPayload = {
     type: "registered",
-    voter: {
-      name: voter.name,
-      avatar: voter.avatar,
-      wallet: voter.wallet,
-      ward: voter.ward,
-      cardId: voter.cardId,
-      tokenBalance: null, // Hidden until PIN verified
-      encryptedPayload: voter.encryptedPayload,
-    },
+    cardId,
+    voter: publicVoter(voter, { tokenBalance: null }), // Hidden until PIN verified
+    claim: claim.token,
     transaction: txEntry,
   };
 
-  // Emit to specific socket if provided, otherwise broadcast
-  if (socketId && io.sockets.sockets.get(socketId)) {
-    io.to(socketId).emit("card-scanned", scanPayload);
-  } else {
-    io.emit("card-scanned", scanPayload);
-  }
+  emitCardScanned(socketId, scanPayload);
 
   return sendEncrypted(res, 200, {
     success: true,
     registered: true,
-    voter: voter.name,
-    tokenBalance: null, // Hidden
+    name: voter.name,
+    voter: publicVoter(voter, { tokenBalance: null }),
+    cardId,
+    tokenBalance: null, // Hidden until the PIN is verified
+    session: sessions.publicView(session),
   });
 });
+
+function identityHash() {
+  return (
+    "0x" +
+    crypto
+      .createHash("md5")
+      .update("identity" + Date.now() + crypto.randomBytes(8).toString("hex"))
+      .digest("hex")
+  );
+}
+
+/** Keeps socket.data.session in sync so scan routing can find idle kiosks. */
+function markSocketSession(socketId, cardId) {
+  if (typeof socketId !== "string" || !socketId) return;
+  const socket = io.sockets.sockets.get(socketId);
+  if (!socket) return;
+  socket.data.session = cardId ? { cardId } : null;
+}
+
+/**
+ * Delivers a scan to the kiosk that asked for it. When the scan came from
+ * another device (phone shortcut over the tunnel) no socket id is known, so the
+ * event only goes to kiosks that are not signed in — a member who is already
+ * using the kiosk must not be silently switched to somebody else's card.
+ */
+function emitCardScanned(socketId, payload) {
+  const target = socketId ? io.sockets.sockets.get(socketId) : null;
+  if (target) {
+    target.emit("card-scanned", payload);
+    return;
+  }
+  for (const socket of io.sockets.sockets.values()) {
+    if (!socket.data || !socket.data.session) socket.emit("card-scanned", payload);
+  }
+}
 
 // Check token balance for a card
 app.get("/balance", async (req, res) => {
@@ -660,23 +1159,40 @@ app.post("/verify-pin", async (req, res) => {
   if (!data) {
     return sendEncrypted(res, 400, { error: "Invalid encrypted payload" });
   }
-  const { encryptedPayload, pin } = data;
-
-  if (!encryptedPayload || !pin) {
-    return sendEncrypted(res, 400, { error: "Missing encryptedPayload or pin" });
+  const { pin } = data;
+  if (typeof pin !== "string" || !pin) {
+    return sendEncrypted(res, 400, { error: "Missing PIN" });
   }
 
-  let decryptedPrivateKey;
-  try {
-    decryptedPrivateKey = decryptPayload(encryptedPayload, pin);
-  } catch (e) {
+  const session = requireSession(req, res);
+  if (!session) return undefined;
+  if (!sessionCardMatches(session, data)) {
+    return sendEncrypted(res, 409, {
+      error: "Another member signed in on this kiosk.",
+      code: "SESSION_SUPERSEDED",
+    });
+  }
+
+  const vault = resolveVault(req, session, data);
+  if (!vault) {
+    return sendEncrypted(res, 401, {
+      error: "Session expired. Tap your card to continue.",
+      code: "SESSION_EXPIRED",
+    });
+  }
+
+  const locked = sendPinError(res, session);
+  if (locked) return locked;
+
+  const signer = unlockWithPin(session, pin, vault.encryptedPayload);
+  if (!signer) {
     console.error("❌ Balance check failed: Wrong PIN!");
-    return sendEncrypted(res, 401, { error: "Incorrect PIN. Vault failed to open." });
+    return sendEncrypted(res, 401, {
+      error: "Incorrect PIN. Vault failed to open.",
+      code: "PIN_INVALID",
+    });
   }
 
-  // If we decrypted it successfully, we know this is the actual voter.
-  const signer = new ethers.Wallet(decryptedPrivateKey, provider);
-  
   try {
     const balance = Number(await daoContract.getTokenBalance(signer.address));
     return sendEncrypted(res, 200, {
@@ -697,23 +1213,43 @@ app.post("/vote", async (req, res) => {
       error: "Invalid encrypted payload",
     });
   }
-  const { encryptedPayload, proposalId, pin } = data;
+  const { proposalId, pin } = data;
 
-  if (!encryptedPayload || !proposalId || !pin) {
+  if (!proposalId || typeof pin !== "string" || !pin) {
     return sendEncrypted(res, 400, {
-      error: "Missing encryptedPayload, proposalId, or pin",
+      error: "Missing proposalId or pin",
     });
   }
 
-  let decryptedPrivateKey;
-  try {
-    decryptedPrivateKey = decryptPayload(encryptedPayload, pin);
-  } catch (e) {
-    console.error("❌ Decryption failed: Wrong PIN or tampered payload!");
-    return sendEncrypted(res, 401, { error: "Incorrect PIN. Vault failed to open." });
+  const session = requireSession(req, res);
+  if (!session) return undefined;
+  if (!sessionCardMatches(session, data)) {
+    return sendEncrypted(res, 409, {
+      error: "Another member signed in on this kiosk.",
+      code: "SESSION_SUPERSEDED",
+    });
   }
 
-  const signer = new ethers.Wallet(decryptedPrivateKey, provider);
+  const vault = resolveVault(req, session, data);
+  if (!vault) {
+    return sendEncrypted(res, 401, {
+      error: "Session expired. Tap your card to continue.",
+      code: "SESSION_EXPIRED",
+    });
+  }
+
+  const locked = sendPinError(res, session);
+  if (locked) return locked;
+
+  const signer = unlockWithPin(session, pin, vault.encryptedPayload);
+  if (!signer) {
+    console.error("❌ Decryption failed: Wrong PIN or tampered payload!");
+    return sendEncrypted(res, 401, {
+      error: "Incorrect PIN. Vault failed to open.",
+      code: "PIN_INVALID",
+    });
+  }
+
   const connectedContract = daoContract.connect(signer);
 
   try {
@@ -734,22 +1270,29 @@ app.post("/vote", async (req, res) => {
       category: p.category,
       fundsRequested: Number(p.fundsRequested),
       votes: Number(p.votes),
-      imageUrl: proposalImages[Number(p.id)] || "",
+      imageUrl: getProposalImage(Number(p.id)),
       status: p.active ? "active" : "inactive",
     };
 
-    const txEntry = {
-      id: transactionFeed.length + 1,
-      type: "VOTE_CAST",
-      hash: tx.hash,
-      timestamp: new Date().toISOString(),
-    };
-    transactionFeed.push(txEntry);
+    const txEntry = addTransaction({ type: "VOTE_CAST", hash: tx.hash });
+    const voter = vault.voter;
+    if (voter) {
+      store.mutate((state) => {
+        state.voters[voter.cardId] = {
+          ...voter,
+          lastSeenAt: new Date().toISOString(),
+        };
+      });
+    }
 
     const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
 
     io.emit("vote-recorded", {
-      voter: { name: "Voter", wallet: signer.address, tokenBalance: updatedBalance },
+      voter: {
+        name: (voter && voter.name) || "Voter",
+        wallet: signer.address,
+        tokenBalance: updatedBalance,
+      },
       proposal: proposalObj,
       transaction: txEntry,
     });
@@ -770,7 +1313,9 @@ app.post("/vote", async (req, res) => {
 //  V2: TUNNEL INFO — Read cloudflared public URL
 // ─────────────────────────────────────────────
 
-const CLOUDFLARED_LOG = path.join(__dirname, "..", "cloudflared.log");
+const CLOUDFLARED_LOG = process.env.CLOUDFLARED_LOG
+  ? path.resolve(process.env.CLOUDFLARED_LOG)
+  : path.join(__dirname, "..", "cloudflared.log");
 let cachedTunnelUrl = null;
 
 function extractTunnelUrl() {
@@ -789,7 +1334,6 @@ function extractTunnelUrl() {
   }
 }
 
-// Reset cached URL when the log file is deleted/recreated
 setInterval(() => {
   if (cachedTunnelUrl && fs.existsSync(CLOUDFLARED_LOG)) {
     const log = fs.readFileSync(CLOUDFLARED_LOG, "utf8");
@@ -797,11 +1341,10 @@ setInterval(() => {
   } else if (cachedTunnelUrl && !fs.existsSync(CLOUDFLARED_LOG)) {
     cachedTunnelUrl = null;
   }
-}, 30000);
+}, 30000).unref();
 
 app.get("/tunnel-info", (req, res) => {
   const tunnelUrl = extractTunnelUrl();
-  // Get LAN IP
   const nets = require("os").networkInterfaces();
   let lanIp = "localhost";
   for (const name of Object.keys(nets)) {
@@ -820,26 +1363,40 @@ app.get("/tunnel-info", (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-//  V2: INVITE CODES — Virtual NFC cards for remote users
+//  V2: INVITE CODES — Virtual NFC cards (persisted)
 // ─────────────────────────────────────────────
-
-// In-memory invite store: code → { label, cardId, used, expiresAt, createdAt }
-const invites = new Map();
 
 function generateInviteCode() {
   const part = () => crypto.randomBytes(2).toString("hex").toUpperCase();
   return `TDAO-${part()}-${part()}`;
 }
 
-// Generate a new invite code (creates a virtual cardId)
+function pruneInvites() {
+  const now = Date.now();
+  const invites = listInvites();
+  for (const [code, invite] of Object.entries(invites)) {
+    const expired = new Date(invite.expiresAt).getTime() < now - 7 * 24 * 60 * 60 * 1000;
+    if (expired) delete invites[code];
+  }
+}
+
 app.post("/invites/generate", (req, res) => {
   const body = req.body || {};
-  const label = (body.label || "Remote Voter").slice(0, 64);
+  const label = String(body.label || "Remote Voter").slice(0, 64);
   const code = generateInviteCode();
   const cardId = `INVITE-${code}`;
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  invites.set(code, { label, cardId, used: false, expiresAt, createdAt: new Date().toISOString() });
+  store.mutate((state) => {
+    pruneInvites();
+    state.invites[code] = {
+      label,
+      cardId,
+      used: false,
+      expiresAt,
+      createdAt: new Date().toISOString(),
+    };
+  });
   console.log(`🎟️  Invite generated: ${code} → cardId: ${cardId}`);
 
   const tunnelUrl = extractTunnelUrl();
@@ -849,10 +1406,9 @@ app.post("/invites/generate", (req, res) => {
   return res.json({ code, cardId, label, joinUrl, expiresAt });
 });
 
-// Get QR code image for an invite code
 app.get("/invites/qr/:code", async (req, res) => {
   const code = req.params.code;
-  const invite = invites.get(code);
+  const invite = listInvites()[code];
   if (!invite) return res.status(404).json({ error: "Invite not found" });
 
   const tunnelUrl = extractTunnelUrl();
@@ -863,29 +1419,31 @@ app.get("/invites/qr/:code", async (req, res) => {
     const png = await QRCode.toBuffer(joinUrl, { width: 300, margin: 2 });
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     return res.send(png);
   } catch (err) {
     return res.status(500).json({ error: "QR generation failed" });
   }
 });
 
-// List all active invites
 app.get("/invites", (req, res) => {
-  const list = [];
-  for (const [code, inv] of invites.entries()) {
-    list.push({ code, label: inv.label, used: inv.used, expiresAt: inv.expiresAt, createdAt: inv.createdAt });
-  }
+  const list = Object.entries(listInvites()).map(([code, invite]) => ({
+    code,
+    label: invite.label,
+    used: invite.used,
+    expiresAt: invite.expiresAt,
+    createdAt: invite.createdAt,
+  }));
   return res.json(list);
 });
 
-// Redeem an invite code — triggers same flow as NFC card scan
 app.post("/invites/redeem", async (req, res) => {
   const body = req.body || {};
   const { code, socketId } = body;
 
   if (!code) return res.status(400).json({ error: "Invite code required" });
 
-  const invite = invites.get(code);
+  const invite = listInvites()[code];
   if (!invite) return res.status(404).json({ error: "Invite code not found or expired" });
   if (invite.used) return res.status(409).json({ error: "This invite has already been used" });
 
@@ -901,64 +1459,83 @@ app.post("/invites/redeem", async (req, res) => {
   if (!voter) {
     // Not yet registered — show registration modal (same as unregistered NFC card)
     const payload = { type: "unregistered", cardId };
-    if (socketId && io.sockets.sockets.get(socketId)) {
-      io.to(socketId).emit("card-scanned", payload);
-    } else {
-      io.emit("card-scanned", payload);
-    }
+    emitCardScanned(socketId, payload);
     console.log(`🎟️  Invite ${code} redeemed (unregistered) → cardId: ${cardId}`);
     return res.json({ success: true, registered: false, cardId });
   }
 
   // Already registered — emit voter session
-  invite.used = true;
+  store.mutate((state) => {
+    if (state.invites[code]) state.invites[code].used = true;
+  });
+
   let tokenBalance = 0;
   try {
     tokenBalance = Number(await daoContract.getTokenBalance(voter.wallet));
   } catch (_) {}
 
-  const scanPayload = {
-    type: "registered",
-    voter: {
-      name: voter.name,
-      avatar: voter.avatar,
-      wallet: voter.wallet,
-      ward: voter.ward,
-      cardId: voter.cardId,
-      tokenBalance: null,
-      encryptedPayload: voter.encryptedPayload,
-    },
-  };
+  const session = issueSession(req, res, cardId);
+  const claim = sessions.issueClaim(cardId);
 
-  if (socketId && io.sockets.sockets.get(socketId)) {
-    io.to(socketId).emit("card-scanned", scanPayload);
-  } else {
-    io.emit("card-scanned", scanPayload);
-  }
+  emitCardScanned(socketId, {
+    type: "registered",
+    cardId,
+    voter: publicVoter(voter, { tokenBalance: null }),
+    claim: claim.token,
+  });
 
   console.log(`🎟️  Invite ${code} redeemed (registered) → voter: ${voter.name}`);
-  return res.json({ success: true, registered: true, voter: voter.name });
+  return res.json({
+    success: true,
+    registered: true,
+    name: voter.name,
+    voter: publicVoter(voter, { tokenBalance: null }),
+    cardId,
+    session: sessions.publicView(session),
+  });
 });
 
 // ─────────────────────────────────────────────
-//  SOCKET.IO — Per-socket sessions
+//  ERROR HANDLING
+// ─────────────────────────────────────────────
+
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  if (err instanceof multer.MulterError || err.status === 400) {
+    const message =
+      err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
+        ? `Image is too large. Maximum size is ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB.`
+        : err.message || "Invalid upload";
+    return res.status(400).json({ error: message });
+  }
+  console.error("❌ Unhandled request error:", err);
+  return res.status(500).json({ error: "Internal server error" });
+});
+
+// ─────────────────────────────────────────────
+//  SOCKET.IO
 // ─────────────────────────────────────────────
 io.on("connection", async (socket) => {
   console.log("🔌 Client connected:", socket.id);
 
+  const connectedSession = currentSession(socket.request);
+  socket.data.session = connectedSession
+    ? { cardId: connectedSession.record.cardId }
+    : null;
+
   const proposalsData = await readAllProposals();
+  const state = store.getState();
 
   socket.emit("init", {
     proposals: proposalsData,
-    transactions: transactionFeed.slice(-20),
+    transactions: state.transactions.slice(-20),
     treasury: { totalFunds: 500000, allocated: 0, currency: "DAO Tokens" },
     socketId: socket.id, // Send socketId so frontend can use it for NFC shortcut linking
-    registeredVoters: voters.size,
+    registeredVoters: listVoters().length,
   });
 
   socket.on("disconnect", () => {
     console.log("🔌 Client disconnected:", socket.id);
-    socketSessions.delete(socket.id);
   });
 });
 
@@ -974,14 +1551,13 @@ if (fs.existsSync(frontendDistPath)) {
 // ─────────────────────────────────────────────
 //  START SERVER
 // ─────────────────────────────────────────────
-server.listen(port, "0.0.0.0", () => {
+function printBanner() {
   console.log("");
   console.log("═══════════════════════════════════════════════");
   console.log("   🏛️  TAP DAO — Mobile Kiosk Server");
   console.log("═══════════════════════════════════════════════");
   console.log(`   Local:   http://localhost:${port}`);
 
-  // Show LAN IP for kiosk phones
   const nets = require("os").networkInterfaces();
   for (const name of Object.keys(nets)) {
     for (const net of nets[name]) {
@@ -991,8 +1567,42 @@ server.listen(port, "0.0.0.0", () => {
     }
   }
 
+  const ai = aiConfig();
   console.log("═══════════════════════════════════════════════");
-  console.log(`   Registered cards: ${voters.size}`);
+  console.log(`   Registered cards: ${listVoters().length}`);
   console.log(`   Contract: ${contractAddress || "Not deployed"}`);
+  console.log(`   State file: ${store.file}`);
+  console.log(`   Uploads dir: ${uploadDir}`);
+  console.log(
+    `   AI provider: ${ai.configured ? ai.provider : "NOT CONFIGURED (set COLAB_AI_URL)"}`,
+  );
+  console.log(
+    `   Sessions: ${sessions.ephemeralSecret ? "ephemeral secret (set SESSION_SECRET)" : "signed with SESSION_SECRET"}`,
+  );
+  if (USING_DEV_KEYS) {
+    console.warn(
+      "   ⚠️  Using public Hardhat development keys. Set ADMIN_PRIVATE_KEY / VOTER_PRIVATE_KEYS for any non-demo deployment.",
+    );
+  }
   console.log("═══════════════════════════════════════════════");
-});
+}
+
+if (require.main === module) {
+  server.listen(port, "0.0.0.0", () => printBanner());
+}
+
+module.exports = {
+  app,
+  server,
+  io,
+  store,
+  sessions,
+  printBanner,
+  config: {
+    port,
+    rpcUrl,
+    uploadDir,
+    dataFile: store.file,
+    voterKeyCount: VOTER_KEYS.length,
+  },
+};

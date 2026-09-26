@@ -11,6 +11,60 @@ const API_BASE = (
 
 const SOCKET_BASE = import.meta.env.VITE_SOCKET_URL || API_BASE || undefined;
 
+const AI_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AI_TIMEOUT_MS || 100000);
+const SESSION_TOUCH_INTERVAL_MS = 30000;
+const SESSION_WARNING_SECONDS = 60;
+
+// The session cookie is HttpOnly, so the browser also keeps a *public* handle
+// for the session it believes it holds. The server refuses to act on a session
+// whose handle does not match, which is what keeps two members sharing one
+// kiosk from bleeding into each other. sessionStorage survives a reload, so a
+// refresh still restores the member, while a fresh visitor is never handed the
+// previous member's session.
+const SESSION_HANDLE_KEY = "tapdao.sessionHandle";
+
+function readSessionHandle() {
+  try {
+    return window.sessionStorage.getItem(SESSION_HANDLE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeSessionHandle(handle) {
+  try {
+    if (handle) window.sessionStorage.setItem(SESSION_HANDLE_KEY, handle);
+    else window.sessionStorage.removeItem(SESSION_HANDLE_KEY);
+  } catch {
+    /* private mode: the cookie still works, only the binding is lost */
+  }
+}
+
+class ApiError extends Error {
+  constructor(message, status, code) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const AI_ERROR_HINTS = {
+  AI_NOT_CONFIGURED:
+    "AI Assist is not configured on the server. Set COLAB_AI_URL in backend/.env and restart the backend.",
+  AI_UNREACHABLE:
+    "The AI provider is unreachable. Check that the Colab notebook is still running and the tunnel URL is current.",
+  AI_TIMEOUT:
+    "The AI provider took too long to answer. Colab runtimes wake slowly — try again in a few seconds.",
+  AI_INVALID_RESPONSE:
+    "The AI provider returned an unexpected response. Re-run the Colab cell and confirm the tunnel URL points at the API root.",
+  AI_EMPTY_RESULT:
+    "The model did not return a usable draft. Add more detail to your description and try again.",
+  AI_UPSTREAM_ERROR:
+    "The AI provider reported an error. Check the Colab logs for details.",
+  PIN_LOCKED: "Too many incorrect PIN attempts. Wait a moment and try again.",
+};
+
 // ─── RegisterModal Component ───
 function RegisterModal({ cardId, onRegister, onCancel, loading, error }) {
   const [name, setName] = useState("");
@@ -151,7 +205,7 @@ function PinModal({ action, onSubmit, onCancel, error }) {
 }
 
 // ─── ProposalPreview Modal ───
-function ProposalPreview({ proposal, onClose, onVote, currentVoter }) {
+function ProposalPreview({ proposal, imageUrl, onClose, onVote, currentVoter }) {
   if (!proposal) return null;
 
   const tokensReceived = (proposal.votes || 0) * 100;
@@ -160,9 +214,9 @@ function ProposalPreview({ proposal, onClose, onVote, currentVoter }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-        {proposal.imageUrl ? (
+        {imageUrl ? (
           <div className="preview-hero">
-            <img src={proposal.imageUrl} alt="" />
+            <img src={imageUrl} alt="" />
           </div>
         ) : null}
 
@@ -288,6 +342,8 @@ function App() {
 
   // ── AI Preview ──
   const [aiPreview, setAiPreview] = useState(null);
+  const [aiStatus, setAiStatus] = useState(null);
+  const [aiElapsed, setAiElapsed] = useState(0);
 
   // ── Balance countdown ──
   const [balanceSecondsLeft, setBalanceSecondsLeft] = useState(null);
@@ -299,10 +355,17 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState("All");
 
   const toastTimerRef = useRef(null);
-  const voterTimeoutRef = useRef(null);
   const sessionCountdownRef = useRef(null);
   const balanceCountdownRef = useRef(null);
   const socketRef = useRef(null);
+  const sessionRef = useRef(null);
+  // Bumped on every sign-in/sign-out so responses from a previous member can
+  // never be applied to the member who is signed in now.
+  const sessionEpochRef = useRef(0);
+  const pendingScanRef = useRef(null);
+  const lastTouchRef = useRef(0);
+  const onSessionLostRef = useRef(null);
+  const aiElapsedRef = useRef(null);
 
   // ── Computed ──
   const totalVotes = useMemo(
@@ -321,20 +384,66 @@ function App() {
     toastTimerRef.current = setTimeout(() => setToast(""), 3500);
   }, []);
 
-  const handleLogout = useCallback(() => {
-    setCurrentVoter(null);
+  // Everything that belongs to one member. Shared data (proposals, the
+  // transaction feed, invites) is deliberately left alone.
+  const resetMemberState = useCallback(() => {
     setIntendedAction(null);
+    setActiveTab("vote");
     setAiPreview(null);
     setPreviewProposal(null);
-    if (voterTimeoutRef.current) clearTimeout(voterTimeoutRef.current);
-    if (sessionCountdownRef.current) clearInterval(sessionCountdownRef.current);
-    if (balanceCountdownRef.current) clearInterval(balanceCountdownRef.current);
-    setSessionSecondsLeft(null);
+    setPinModal(null);
+    setPinError("");
+    setVotedProposalIds(new Set());
     setBalanceSecondsLeft(null);
-    notify("Signed out successfully");
-  }, [notify]);
+    setAiPrompt("");
+    setAiError("");
+    setAiGenerating(false);
+    setCreating(false);
+    setForm({
+      title: "",
+      description: "",
+      category: "General",
+      fiatBudget: "",
+      imageFile: null,
+    });
+    setManualCardId("");
+  }, []);
+
+  const clearLocalSession = useCallback(
+    (message) => {
+      // Invalidate in-flight requests from the member who is leaving.
+      sessionEpochRef.current += 1;
+      sessionRef.current = null;
+      pendingScanRef.current = null;
+      writeSessionHandle("");
+      resetMemberState();
+      setCurrentVoter(null);
+      if (sessionCountdownRef.current) {
+        clearInterval(sessionCountdownRef.current);
+        sessionCountdownRef.current = null;
+      }
+      if (balanceCountdownRef.current) {
+        clearInterval(balanceCountdownRef.current);
+        balanceCountdownRef.current = null;
+      }
+      lastTouchRef.current = 0;
+      setSessionSecondsLeft(null);
+      if (message) notify(message);
+    },
+    [notify, resetMemberState],
+  );
 
   const toApiPath = useCallback((path) => `${API_BASE}${path}`, []);
+
+  const resolveMediaUrl = useCallback(
+    (value) => {
+      if (typeof value !== "string" || !value) return "";
+      if (/^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
+      if (!value.startsWith("/")) return value;
+      return `${API_BASE}${value}`;
+    },
+    [],
+  );
 
   // ── V2: Copy to clipboard helper ──
   const copyToClipboard = useCallback(async (text, key) => {
@@ -353,6 +462,7 @@ function App() {
     try {
       const res = await fetch(toApiPath("/invites/generate"), {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label: inviteLabel.trim() || "Remote Voter" }),
       });
@@ -371,50 +481,217 @@ function App() {
   const decodeApiPayload = useCallback((data) => {
     if (data && typeof data === "object" && typeof data.payload === "string") {
       const decrypted = decrypt(data.payload);
-      if (!decrypted) throw new Error("Unable to decrypt server payload");
-      return JSON.parse(decrypted);
+      if (!decrypted) {
+        throw new ApiError(
+          "Could not decrypt the server response. Check that CRYPTO_SECRET_KEY matches on both sides.",
+          0,
+          "DECRYPT_FAILED",
+        );
+      }
+      try {
+        return JSON.parse(decrypted);
+      } catch {
+        throw new ApiError("Server returned malformed data", 0, "DECRYPT_FAILED");
+      }
     }
     return data;
   }, []);
 
-  const apiGet = useCallback(
-    async (path, fallback) => {
-      const res = await fetch(toApiPath(path));
-      const raw = await res.json();
-      const data = decodeApiPayload(raw);
-      if (!res.ok) throw new Error(data?.error || fallback);
-      return data;
+  const request = useCallback(
+    async (path, { method = "GET", body, formData, timeoutMs, keepalive } = {}) => {
+      const controller = timeoutMs ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      const handle = readSessionHandle();
+      try {
+        const res = await fetch(toApiPath(path), {
+          method,
+          credentials: "include",
+          keepalive: Boolean(keepalive),
+          headers: {
+            ...(formData ? {} : { "Content-Type": "application/json" }),
+            ...(handle ? { "X-Session-Handle": handle } : {}),
+          },
+          body: formData ?? (body === undefined ? undefined : JSON.stringify(body)),
+          signal: controller ? controller.signal : undefined,
+        });
+        const text = await res.text();
+        let raw = null;
+        if (text) {
+          try {
+            raw = JSON.parse(text);
+          } catch {
+            raw = { error: `Unexpected response from server (HTTP ${res.status})` };
+          }
+        }
+        let data = null;
+        try {
+          data = decodeApiPayload(raw);
+        } catch (error) {
+          throw new ApiError(error.message, res.status, "DECRYPT_FAILED");
+        }
+        if (!res.ok) {
+          // Another member took the kiosk over, or this session is gone: drop
+          // our own state quietly instead of throwing a scary error at whoever
+          // is signed in now.
+          if (
+            data &&
+            (data.code === "SESSION_SUPERSEDED" ||
+              data.code === "SESSION_EXPIRED" ||
+              data.code === "SESSION_UNCLAIMED") &&
+            // Only the member whose session failed may be signed out: a slow
+            // response must not sign out the member who replaced them.
+            readSessionHandle() === handle &&
+            onSessionLostRef.current
+          ) {
+            onSessionLostRef.current(data.code);
+          }
+          throw new ApiError(data?.error || `Request failed (HTTP ${res.status})`, res.status, data?.code);
+        }
+        return { data, res };
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        if (error.name === "AbortError") {
+          throw new ApiError("The request timed out. Please try again.", 0, "CLIENT_TIMEOUT");
+        }
+        throw new ApiError("Cannot reach the server. Is the backend running?", 0, "NETWORK");
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     },
     [decodeApiPayload, toApiPath],
   );
 
-  const apiPost = useCallback(
-    async (path, body, fallback) => {
-      const encrypted = encrypt(JSON.stringify(body));
-      const res = await fetch(toApiPath(path), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: encrypted }),
-      });
-      const raw = await res.json();
-      const data = decodeApiPayload(raw);
-      if (!res.ok) throw new Error(data?.error || fallback);
+  const apiGet = useCallback(
+    async (path) => {
+      const { data } = await request(path);
       return data;
     },
-    [decodeApiPayload, toApiPath],
+    [request],
   );
+
+  const apiPost = useCallback(
+    async (path, body, options = {}) => {
+      const encrypted = encrypt(JSON.stringify(body ?? {}));
+      const { data } = await request(path, {
+        method: "POST",
+        body: { payload: encrypted },
+        ...options,
+      });
+      return data;
+    },
+    [request],
+  );
+
+  // Declared after apiPost/clearLocalSession: hook dependency arrays are
+  // evaluated during render, so referencing a later `const` throws a
+  // ReferenceError and blanks the whole screen.
+  const handleLogout = useCallback(async () => {
+    const epoch = sessionEpochRef.current;
+    try {
+      await apiPost("/session/logout", { socketId: socketRef.current?.id || null }, {
+        keepalive: true,
+      });
+    } catch {
+      // The local session is dropped either way: the kiosk must never stay
+      // "signed in" just because the network hiccuped.
+    }
+    // A member who tapped in while the logout was in flight keeps their session.
+    if (sessionEpochRef.current === epoch) {
+      clearLocalSession("Signed out successfully");
+    }
+  }, [apiPost, clearLocalSession]);
+
+  // ── Session lifecycle ──
+  const applySession = useCallback(
+    (voter, session) => {
+      if (!voter) return null;
+      // A new member takes the kiosk over completely: previous member state is
+      // dropped instead of merged, so no PIN, balance or draft survives a swap.
+      sessionEpochRef.current += 1;
+      const epoch = sessionEpochRef.current;
+      sessionRef.current = { voter, session };
+      writeSessionHandle(session && session.handle ? session.handle : "");
+      resetMemberState();
+      setCurrentVoter(voter);
+      if (session && typeof session.remainingMs === "number") {
+        // remainingMs is already clamped to the server-side absolute cap
+        setSessionSecondsLeft(Math.max(1, Math.round(session.remainingMs / 1000)));
+      }
+      return epoch;
+    },
+    [resetMemberState],
+  );
+
+  const signIn = useCallback(
+    (voter, session, message) => {
+      const epoch = applySession(voter, session);
+      if (message) notify(message);
+      return epoch;
+    },
+    [applySession, notify],
+  );
+
+  const touchSession = useCallback(async () => {
+    const current = sessionRef.current;
+    if (!current) return;
+    const epoch = sessionEpochRef.current;
+    const cardId = current.voter && current.voter.cardId;
+    lastTouchRef.current = Date.now();
+    try {
+      const data = await apiPost("/session/touch", {});
+      // The response belongs to whoever is signed in right now — never to the
+      // member whose request this actually was.
+      if (sessionEpochRef.current !== epoch) return;
+      if (data && data.session) {
+        if (data.session.cardId && cardId && data.session.cardId !== cardId) return;
+        sessionRef.current = { voter: current.voter, session: data.session };
+        setSessionSecondsLeft(Math.max(1, Math.round(data.session.remainingMs / 1000)));
+      }
+    } catch (error) {
+      if (sessionEpochRef.current !== epoch) return;
+      if (error.code === "SESSION_EXPIRED" || error.code === "NETWORK") {
+        clearLocalSession(
+          error.code === "SESSION_EXPIRED"
+            ? "Session expired — tap your card to continue."
+            : null,
+        );
+      }
+    }
+  }, [apiPost, clearLocalSession]);
+
+  const restoreSession = useCallback(async () => {
+    const knownHandle = readSessionHandle();
+    try {
+      const data = await apiGet("/session");
+      if (data && data.voter) {
+        applySession(data.voter, data.session);
+      }
+    } catch (error) {
+      // A kiosk that does not remember a session must not inherit the cookie's
+      // session, and one that was replaced just starts over quietly.
+      if (
+        error.code === "SESSION_EXPIRED" ||
+        error.code === "SESSION_UNCLAIMED" ||
+        error.code === "SESSION_SUPERSEDED"
+      ) {
+        if (knownHandle) clearLocalSession();
+        return;
+      }
+      if (error.code) notify(`Could not verify your session: ${error.message}`);
+    }
+  }, [apiGet, applySession, clearLocalSession, notify]);
 
   // ── NFC Scan (triggered by iOS Shortcut / Android NFC app or manual input) ──
   const scanCard = useCallback(
     async (cardId) => {
       if (!cardId) return;
-      
+
       // Wait for socket to be connected and have an ID
       const waitForSocket = () => {
         return new Promise((resolve, reject) => {
           const maxWait = 5000; // 5 seconds max wait
           const startTime = Date.now();
-          
+
           const checkSocket = () => {
             if (socketRef.current?.connected && socketRef.current?.id) {
               resolve(socketRef.current.id);
@@ -424,23 +701,28 @@ function App() {
               setTimeout(checkSocket, 100);
             }
           };
-          
+
           checkSocket();
         });
       };
-      
+
       try {
         const sid = await waitForSocket();
-        await apiGet(
+        // Remember the scan so the matching socket event does not sign the
+        // member in twice (this browser already gets its own cookie back).
+        pendingScanRef.current = { cardId, at: Date.now() };
+        const data = await apiGet(
           `/scan?cardId=${encodeURIComponent(cardId)}&socketId=${encodeURIComponent(sid)}`,
-          "Card scan failed",
         );
+        if (data && data.voter && data.session) {
+          signIn(data.voter, data.session);
+        }
       } catch (error) {
         console.error("Card scan error:", error);
         notify(`Scan failed: ${error.message}`);
       }
     },
-    [apiGet, notify],
+    [apiGet, notify, signIn],
   );
 
   // ── Register a new card ──
@@ -449,41 +731,32 @@ function App() {
       setRegisterLoading(true);
       setRegisterError("");
       try {
-        const data = await apiPost("/register", { cardId, name, pin }, "Registration failed");
-        setCurrentVoter({
-          ...data.voter,
-          cardId,
-        });
+        const data = await apiPost("/register", { cardId, name, pin });
         setRegisterCardId(null);
+        applySession({ ...data.voter, cardId }, data.session);
+        setIntendedAction("read");
+        setActiveTab("vote");
         notify(`Welcome, ${data.voter.name}! Card registered with 1000 tokens.`);
-
-        // Reset voter timeout
-        if (voterTimeoutRef.current) clearTimeout(voterTimeoutRef.current);
-        voterTimeoutRef.current = setTimeout(() => setCurrentVoter(null), 120000);
       } catch (error) {
         setRegisterError(error.message);
       } finally {
         setRegisterLoading(false);
       }
     },
-    [apiPost, notify],
+    [apiPost, applySession, notify],
   );
 
   // ── Cast Vote ──
   const castVote = useCallback(
     async (pin) => {
-      if (!pinModal || !currentVoter?.encryptedPayload) return;
+      if (!pinModal || !currentVoter?.cardId) return;
       setPinError("");
       try {
-        await apiPost(
-          "/vote",
-          {
-            encryptedPayload: currentVoter.encryptedPayload,
-            proposalId: pinModal.proposalId,
-            pin,
-          },
-          "Vote request failed",
-        );
+        await apiPost("/vote", {
+          proposalId: pinModal.proposalId,
+          pin,
+          cardId: currentVoter.cardId,
+        });
         // Haptic feedback on success
         navigator.vibrate?.([100, 50, 100]);
         // Track voted proposal locally
@@ -492,6 +765,10 @@ function App() {
         setPinModal(null);
         setPreviewProposal(null);
       } catch (error) {
+        if (error.code === "SESSION_EXPIRED") {
+          setPinModal(null);
+          return;
+        }
         setPinError(error.message);
       }
     },
@@ -501,14 +778,10 @@ function App() {
   // ── Check Balance ──
   const checkBalance = useCallback(
     async (pin) => {
-      if (!currentVoter?.encryptedPayload) return;
+      if (!currentVoter?.cardId) return;
       setPinError("");
       try {
-        const data = await apiPost(
-          "/verify-pin",
-          { encryptedPayload: currentVoter.encryptedPayload, pin },
-          "Balance check failed",
-        );
+        const data = await apiPost("/verify-pin", { pin, cardId: currentVoter.cardId });
         setCurrentVoter((prev) => ({ ...prev, tokenBalance: data.tokenBalance }));
         setPinModal(null);
         // Balance countdown: 10s then auto-hide
@@ -525,7 +798,11 @@ function App() {
           });
         }, 1000);
       } catch (error) {
-        setPinError(error.message);
+        if (error.code === "SESSION_EXPIRED") {
+          setPinModal(null);
+          return;
+        }
+        setPinError(AI_ERROR_HINTS[error.code] || error.message);
       }
     },
     [apiPost, currentVoter],
@@ -560,7 +837,7 @@ function App() {
 
   const executeCreateProposal = useCallback(
     async (pin) => {
-      if (!currentVoter?.encryptedPayload || !pinModal?.requiredTokens) return;
+      if (!currentVoter?.cardId || !pinModal?.requiredTokens) return;
       setCreating(true);
       setPinError("");
 
@@ -569,42 +846,51 @@ function App() {
         try {
           const fd = new FormData();
           fd.append("image", form.imageFile);
-          const uploadRes = await fetch(toApiPath("/upload"), { method: "POST", body: fd });
-          if (!uploadRes.ok) throw new Error("Upload failed");
-          const uploadData = await uploadRes.json();
-          imageUrl = uploadData.imageUrl || "";
+          const { data } = await request("/upload", { method: "POST", formData: fd });
+          imageUrl = data.imageUrl || "";
         } catch (err) {
           notify(`Image upload warning: ${err.message}`);
         }
       }
 
       try {
-        await apiPost(
-          "/proposals",
-          {
-            title: form.title.trim(),
-            description: form.description.trim(),
-            category: form.category,
-            fundsRequested: pinModal.requiredTokens,
-            imageUrl,
-            encryptedPayload: currentVoter.encryptedPayload,
-            pin,
-          },
-          "Create proposal failed",
-        );
+        await apiPost("/proposals", {
+          title: form.title.trim(),
+          description: form.description.trim(),
+          category: form.category,
+          fundsRequested: pinModal.requiredTokens,
+          imageUrl,
+          pin,
+          cardId: currentVoter.cardId,
+        });
         setForm({ title: "", description: "", category: "General", fiatBudget: "", imageFile: null });
         setPinModal(null);
         notify("Proposal created! 200 tokens deducted.");
         setIntendedAction("read");
         setActiveTab("vote");
       } catch (error) {
-        setPinError(error.message);
+        if (error.code === "SESSION_EXPIRED") {
+          setPinModal(null);
+          return;
+        }
+        setPinError(AI_ERROR_HINTS[error.code] || error.message);
       } finally {
         setCreating(false);
       }
     },
-    [apiPost, currentVoter, form, notify, pinModal, toApiPath],
+    [apiPost, currentVoter, form, notify, pinModal, request],
   );
+
+  // ── AI status (provider configured / reachable) ──
+  const checkAiStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/ai/status`, { credentials: "include" });
+      if (!res.ok) throw new Error("status unavailable");
+      setAiStatus(await res.json());
+    } catch {
+      setAiStatus({ configured: false, reachable: false, detail: "backend unreachable" });
+    }
+  }, []);
 
   // ── AI Generate ──
   const generateProposal = useCallback(async () => {
@@ -614,12 +900,19 @@ function App() {
     }
     setAiGenerating(true);
     setAiError("");
+    setAiElapsed(0);
+    aiElapsedRef.current = setInterval(() => {
+      setAiElapsed((value) => value + 1);
+    }, 1000);
     try {
       const generated = await apiPost(
         "/proposals/generate",
         { text: aiPrompt.trim() },
-        "AI generation failed",
+        { timeoutMs: AI_REQUEST_TIMEOUT_MS },
       );
+      if (!generated || !generated.title) {
+        throw new ApiError("AI returned an empty draft", 502, "AI_EMPTY_RESULT");
+      }
       setAiPreview({
         title: generated.title || "",
         description: generated.description || "",
@@ -627,11 +920,19 @@ function App() {
       });
       notify("AI structured your proposal — review and accept");
     } catch (error) {
-      setAiError(error.message || "Failed to generate proposal");
+      const clientTimeout = error.code === "CLIENT_TIMEOUT";
+      setAiError(
+        clientTimeout
+          ? "The request timed out in the browser. The AI runtime may be slow — try again."
+          : AI_ERROR_HINTS[error.code] || error.message || "Failed to generate proposal",
+      );
+      checkAiStatus();
     } finally {
+      if (aiElapsedRef.current) clearInterval(aiElapsedRef.current);
+      aiElapsedRef.current = null;
       setAiGenerating(false);
     }
-  }, [aiPrompt, apiPost, notify]);
+  }, [aiPrompt, apiPost, notify, checkAiStatus]);
 
   // ── PIN Submit Handler ──
   const handlePinSubmit = useCallback(
@@ -649,6 +950,7 @@ function App() {
     const socket = io(SOCKET_BASE, {
       path: "/socket.io",
       transports: ["websocket", "polling"],
+      withCredentials: true,
     });
     socketRef.current = socket;
 
@@ -673,42 +975,46 @@ function App() {
     });
 
     socket.on("card-scanned", (payload) => {
-      console.log("Card-scanned event received:", payload);
+      if (!payload) return;
       if (payload.type === "unregistered") {
-        console.log("Showing registration modal for card:", payload.cardId);
         setRegisterCardId(payload.cardId);
         return;
       }
 
-      // Known card — set voter and go directly to vote tab (skip action gate)
-      console.log("Setting current voter:", payload.voter);
-      setCurrentVoter(payload.voter || null);
-      setIntendedAction("read"); // skip the "where to?" gate
-      setActiveTab("vote");
-      setVotedProposalIds(new Set()); // reset voted set for new session
-      if (payload.transaction) {
-        setTransactions((prev) => [payload.transaction, ...prev].slice(0, 20));
+      const finishScan = (voter, session) => {
+        if (!voter) return;
+        signIn(voter, session);
+        setIntendedAction("read"); // skip the "where to?" gate
+        if (payload.transaction) {
+          setTransactions((prev) => [payload.transaction, ...prev].slice(0, 20));
+        }
+      };
+
+      // This browser triggered the scan itself, so it already received a
+      // session cookie from the HTTP response.
+      const pending = pendingScanRef.current;
+      if (pending && pending.cardId === payload.cardId && Date.now() - pending.at < 8000) {
+        pendingScanRef.current = null;
+        return;
       }
 
-      // Auto-expire identity after 2 minutes with countdown
-      if (voterTimeoutRef.current) clearTimeout(voterTimeoutRef.current);
-      if (sessionCountdownRef.current) clearInterval(sessionCountdownRef.current);
-      setSessionSecondsLeft(120);
-      sessionCountdownRef.current = setInterval(() => {
-        setSessionSecondsLeft((s) => {
-          if (s === 31) {
-            notify("⚠️ Session expires in 30 seconds. Tap card to renew.");
+      // A scan triggered from the member's phone: the phone got the cookie, not
+      // this kiosk, so the claim is exchanged for a session of its own.
+      if (!payload.claim) return;
+      apiPost("/session/claim", {
+        claim: payload.claim,
+        socketId: socket.id || null,
+      })
+        .then((data) => {
+          if (data && data.voter) finishScan(data.voter, data.session);
+        })
+        .catch((error) => {
+          if (error && error.code === "CLAIM_INVALID") {
+            notify("That scan expired — tap your card again.");
+            return;
           }
-          if (s <= 1) {
-            clearInterval(sessionCountdownRef.current);
-            setCurrentVoter(null);
-            setPinModal(null);
-            setSessionSecondsLeft(null);
-            return null;
-          }
-          return s - 1;
+          console.error("Claim exchange failed:", error);
         });
-      }, 1000);
     });
 
     socket.on("vote-recorded", (payload) => {
@@ -720,7 +1026,12 @@ function App() {
         const enrichedTx = { ...payload.transaction, proposalTitle: payload.proposal.title };
         setTransactions((prev) => [enrichedTx, ...prev].slice(0, 20));
       }
-      if (payload.voter) {
+      // Only the member who actually voted may have their balance refreshed:
+      // a shared kiosk must not copy another member's vote onto this session.
+      const current = sessionRef.current;
+      const currentWallet = current && current.voter && current.voter.wallet;
+      const votedWallet = payload.voter && payload.voter.wallet;
+      if (payload.voter && currentWallet && votedWallet === currentWallet) {
         setCurrentVoter((prev) => (prev ? { ...prev, ...payload.voter } : prev));
       }
       notify(`Vote recorded for "${payload.proposal.title}"`);
@@ -749,6 +1060,7 @@ function App() {
           const sid = socket.id || "";
           const res = await fetch(`${API_BASE}/invites/redeem`, {
             method: "POST",
+            credentials: "include",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ code: inviteFromUrl, socketId: sid }),
           });
@@ -776,33 +1088,26 @@ function App() {
               setTimeout(resolve, 3000); // Timeout after 3 seconds
             }
           });
-          
-          const socketId = socket.id || "";
-          console.log("Socket connected, ID:", socketId);
-          
-          const response = await fetch(
-            `${API_BASE}/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(socketId)}`
+
+          const sid = socket.id || "";
+          pendingScanRef.current = { cardId: cardFromUrl, at: Date.now() };
+          const data = await apiGet(
+            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}`,
           );
-          const raw = await response.json();
-          console.log("Raw scan response:", raw);
-          
-          // Decrypt the response (backend sends encrypted responses)
-          const data = raw?.payload ? JSON.parse(decrypt(raw.payload)) : raw;
-          console.log("Decrypted scan response:", data);
-          
+
           // Clean URL after scan
           window.history.replaceState({}, "", window.location.pathname);
-          
-          // Handle directly from HTTP response instead of waiting for socket
+
           if (data.registered === false) {
             // Unregistered card — show registration modal
-            console.log("Unregistered card, showing registration for:", data.cardId || cardFromUrl);
             setRegisterCardId(data.cardId || cardFromUrl);
           } else if (data.registered === true) {
-            // Registered card — socket event should have fired, but as a fallback
-            // set intended action so user goes straight to dashboard
-            console.log("Registered card detected via HTTP response");
-            setIntendedAction((prev) => prev || "read");
+            if (data.voter && data.session) {
+              signIn(data.voter, data.session);
+              setIntendedAction((prev) => prev || "read");
+            } else if (!sessionRef.current) {
+              await restoreSession();
+            }
           }
         } catch (error) {
           console.error("Scan error:", error);
@@ -817,43 +1122,93 @@ function App() {
     // Fetch tunnel info and poll until ready
     const fetchTunnelInfo = async () => {
       try {
-        const res = await fetch(`${API_BASE}/tunnel-info`);
+        const res = await fetch(`${API_BASE}/tunnel-info`, { credentials: "include" });
         const data = await res.json();
         setTunnelInfo(data);
-      } catch (_) {}
+      } catch {}
     };
     fetchTunnelInfo();
     const tunnelPoll = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/tunnel-info`);
+        const res = await fetch(`${API_BASE}/tunnel-info`, { credentials: "include" });
         const data = await res.json();
         setTunnelInfo(data);
         if (data.tunnelReady) clearInterval(tunnelPoll);
-      } catch (_) {}
+      } catch {}
     }, 5000);
 
     // Fetch proposals
-    fetch(`${API_BASE}/proposals`)
-      .then((r) => r.json())
-      .then((raw) => {
-        try {
-          const decoded =
-            raw?.payload ? JSON.parse(decrypt(raw.payload)) : raw;
-          setProposals(decoded || []);
-        } catch {
-          /* noop */
-        }
-      })
-      .catch(() => { })
+    apiGet("/proposals")
+      .then((decoded) => setProposals(Array.isArray(decoded) ? decoded : []))
+      .catch(() => {})
       .finally(() => setLoading(false));
+
+    // Restore the httpOnly session and probe the AI provider on mount.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    restoreSession();
+    checkAiStatus();
+    /* eslint-enable react-hooks/set-state-in-effect */
 
     return () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      if (voterTimeoutRef.current) clearTimeout(voterTimeoutRef.current);
       clearInterval(tunnelPoll);
       socket.disconnect();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Session: server-authoritative idle window with activity renewal ──
+  useEffect(() => {
+    onSessionLostRef.current = (code) => {
+      // Another member took the kiosk over, or this browser never held a
+      // session: just reset quietly and let the next tap sign someone in.
+      if (code === "SESSION_SUPERSEDED" || code === "SESSION_UNCLAIMED") {
+        clearLocalSession();
+        return;
+      }
+      clearLocalSession("Session expired — tap your card to continue.");
+    };
+    return () => {
+      onSessionLostRef.current = null;
+    };
+  }, [clearLocalSession]);
+
+  useEffect(() => {
+    if (!currentVoter?.cardId) return undefined;
+
+    // Renew the sliding window while the member is actually using the app
+    const onActivity = () => {
+      if (Date.now() - lastTouchRef.current < SESSION_TOUCH_INTERVAL_MS) return;
+      touchSession();
+    };
+    const events = ["pointerdown", "keydown", "touchstart", "wheel", "visibilitychange"];
+    events.forEach((name) =>
+      window.addEventListener(name, onActivity, { passive: true }),
+    );
+    const heartbeat = setInterval(touchSession, SESSION_TOUCH_INTERVAL_MS);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- renews the sliding window after the first paint
+    touchSession();
+
+    if (sessionCountdownRef.current) clearInterval(sessionCountdownRef.current);
+    sessionCountdownRef.current = setInterval(() => {
+      setSessionSecondsLeft((seconds) => {
+        if (seconds === null) return null;
+        if (seconds <= 1) {
+          clearLocalSession("Session idle for too long — tap your card to continue.");
+          return null;
+        }
+        return seconds - 1;
+      });
+    }, 1000);
+
+    return () => {
+      events.forEach((name) => window.removeEventListener(name, onActivity));
+      clearInterval(heartbeat);
+      if (sessionCountdownRef.current) {
+        clearInterval(sessionCountdownRef.current);
+        sessionCountdownRef.current = null;
+      }
+    };
+  }, [currentVoter?.cardId, touchSession, clearLocalSession]);
 
   // ── Native WebNFC Scan (Android / HTTPS only) ──
   const startNativeScan = async () => {
@@ -1070,10 +1425,12 @@ function App() {
       </header>
 
       {/* ── Session Expiry Warning Banner ── */}
-      {sessionSecondsLeft !== null && sessionSecondsLeft <= 30 && (
+      {sessionSecondsLeft !== null && sessionSecondsLeft <= SESSION_WARNING_SECONDS && (
         <div className="session-warning">
           <span>⏱ Session expires in {sessionSecondsLeft}s</span>
-          <span style={{ fontSize: "0.75rem", opacity: 0.8 }}>Tap your card to renew</span>
+          <span style={{ fontSize: "0.75rem", opacity: 0.8 }}>
+            Keep tapping to stay signed in, or tap your card
+          </span>
         </div>
       )}
 
@@ -1184,7 +1541,11 @@ function App() {
                     >
                       {proposal.imageUrl ? (
                         <div className="proposal-thumbnail-wrapper">
-                          <img src={proposal.imageUrl} alt="" className="proposal-thumbnail" />
+                          <img
+                            src={resolveMediaUrl(proposal.imageUrl)}
+                            alt=""
+                            className="proposal-thumbnail"
+                          />
                         </div>
                       ) : null}
 
@@ -1245,6 +1606,31 @@ function App() {
                   <p className="ai-hint">
                     Describe your proposal idea in plain language. AI will structure it.
                   </p>
+
+                  {aiStatus ? (
+                    <div className="ai-status-row">
+                      <span
+                        className={`status-dot ${
+                          aiStatus.configured && aiStatus.reachable ? "ok" : "off"
+                        }`}
+                      />
+                      <span>
+                        {aiStatus.configured
+                          ? aiStatus.reachable
+                            ? `AI ready (${aiStatus.providerModel || aiStatus.model || "colab"})`
+                            : `AI provider unreachable — ${aiStatus.detail || ""}`
+                          : "AI Assist is not configured on the server"}
+                      </span>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={checkAiStatus}
+                        disabled={aiGenerating}
+                      >
+                        Re-check
+                      </button>
+                    </div>
+                  ) : null}
                   
                   {aiPreview ? (
                     <div className="ai-preview-card">
@@ -1281,20 +1667,36 @@ function App() {
                         value={aiPrompt}
                         onChange={(e) => { setAiPrompt(e.target.value); setAiError(""); }}
                         placeholder='e.g. "We need better street lights in sector 7..."'
+                        disabled={aiGenerating}
                       />
-                      {aiError ? <p className="error-text">{aiError}</p> : null}
+                      {aiError ? (
+                        <div className="error-text">
+                          <p>{aiError}</p>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={generateProposal}
+                            disabled={aiGenerating}
+                          >
+                            Try again
+                          </button>
+                        </div>
+                      ) : null}
                       <button
                         type="button"
                         className="primary-btn btn-block"
                         onClick={generateProposal}
-                        disabled={aiGenerating}
+                        disabled={aiGenerating || !aiPrompt.trim()}
                       >
                         {aiGenerating ? "Generating..." : "Generate Proposal"}
                       </button>
                       {aiGenerating ? (
                         <div className="loading-row">
                           <span className="spinner" />
-                          <span>AI is structuring your proposal...</span>
+                          <span>
+                            AI is structuring your proposal… {aiElapsed}s
+                            {aiElapsed >= 20 ? " (cold GPU start can take a while)" : ""}
+                          </span>
                         </div>
                       ) : null}
                     </>
@@ -1577,6 +1979,7 @@ function App() {
       {previewProposal ? (
         <ProposalPreview
           proposal={previewProposal}
+          imageUrl={resolveMediaUrl(previewProposal.imageUrl)}
           onClose={() => setPreviewProposal(null)}
           onVote={startVoteFlow}
           currentVoter={currentVoter}

@@ -1,6 +1,36 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+// The dev server proxies API traffic to the backend so the browser always talks
+// to a single origin (no CORS/cookie/absolute-URL surprises on LAN phones or
+// through the Cloudflare tunnel).
+// Override with VITE_PROXY_TARGET, e.g. http://app:9200 inside Docker.
+const PROXY_TARGET = process.env.VITE_PROXY_TARGET || "http://localhost:9200";
+
+const API_ROUTES = [
+  "/session",
+  "/contract",
+  "/proposals",
+  "/scan",
+  "/balance",
+  "/verify-pin",
+  "/vote",
+  "/register",
+  "/card",
+  "/upload",
+  "/uploads",
+  "/invites",
+  "/tunnel-info",
+  "/ai",
+  "/health",
+];
+
+const proxy = Object.fromEntries(
+  API_ROUTES.map((route) => [route, { target: PROXY_TARGET, changeOrigin: true }]),
+);
+
+proxy["/socket.io"] = { target: PROXY_TARGET, ws: true, changeOrigin: true };
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -9,52 +39,6 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     allowedHosts: ["tap.kiyoai.in"],
-    proxy: {
-      "/proposals": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/scan": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/balance": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/vote": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/register": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/card": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/upload": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/uploads": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/contract": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/verify-pin": {
-        target: "http://localhost:3001",
-        changeOrigin: true,
-      },
-      "/socket.io": {
-        target: "http://localhost:3001",
-        ws: true,
-        changeOrigin: true,
-      },
-    },
+    proxy,
   },
 });
