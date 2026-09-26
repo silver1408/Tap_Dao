@@ -4,7 +4,7 @@ const CryptoJS = require("crypto-js");
 // the browser bundle, so it must come from the environment in production: the
 // dev fallback below is public knowledge and would let anyone forge payloads.
 const DEV_FALLBACK_KEY = "your-very-strong-secret-key";
-const SECRET_KEY = process.env.CRYPTO_SECRET_KEY || "";
+let SECRET_KEY = process.env.CRYPTO_SECRET_KEY || "";
 
 if (!SECRET_KEY) {
   if (process.env.NODE_ENV === "production") {
