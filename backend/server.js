@@ -357,6 +357,7 @@ app.post("/register", async (req, res) => {
     cardId,
     name: voterName,
     wallet: wallet.address,
+    registeredVoters: voters.size,
   });
 
   return sendEncrypted(res, 200, {
@@ -952,6 +953,7 @@ io.on("connection", async (socket) => {
     transactions: transactionFeed.slice(-20),
     treasury: { totalFunds: 500000, allocated: 0, currency: "DAO Tokens" },
     socketId: socket.id, // Send socketId so frontend can use it for NFC shortcut linking
+    registeredVoters: voters.size,
   });
 
   socket.on("disconnect", () => {
