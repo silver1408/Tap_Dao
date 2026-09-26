@@ -214,6 +214,7 @@ function App() {
   // ── Data ──
   const [proposals, setProposals] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [registeredVotersCount, setRegisteredVotersCount] = useState(0);
 
   // ── Identity ──
   const [currentVoter, setCurrentVoter] = useState(null);
@@ -661,6 +662,9 @@ function App() {
       setProposals(payload.proposals || []);
       setTransactions(payload.transactions || []);
       setSocketId(payload.socketId || socket.id);
+      if (payload.registeredVoters !== undefined) {
+        setRegisteredVotersCount(payload.registeredVoters);
+      }
       setLoading(false);
     });
 
@@ -722,8 +726,11 @@ function App() {
       notify(`Vote recorded for "${payload.proposal.title}"`);
     });
 
-    socket.on("voter-registered", () => {
+    socket.on("voter-registered", (payload) => {
       // Could show a notification, but keep it quiet for other kiosks
+      if (payload && payload.registeredVoters !== undefined) {
+        setRegisteredVotersCount(payload.registeredVoters);
+      }
     });
 
     // Check URL for cardId parameter (from NFC shortcut)
@@ -912,7 +919,7 @@ function App() {
   if (!intendedAction && !currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
-        <div className="panel" style={{ textAlign: "center", maxWidth: "400px", width: "100%", margin: "0 auto", padding: "2rem" }}>
+        <div className="panel gate-panel">
           <h2>Welcome to Tap DAO</h2>
           <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
             What would you like to do today?
@@ -935,7 +942,7 @@ function App() {
   if (!intendedAction && currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
-        <div className="panel" style={{ textAlign: "center", maxWidth: "400px", width: "100%", margin: "0 auto", padding: "2rem" }}>
+        <div className="panel gate-panel">
           <h2>Welcome Back, {currentVoter.name}!</h2>
           <p style={{ marginBottom: "2rem", color: "var(--ink-muted)" }}>
             Identity verified. Where to?
@@ -958,7 +965,7 @@ function App() {
   if (intendedAction && !currentVoter) {
     return (
       <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
-        <div className="panel" style={{ textAlign: "center", maxWidth: "400px", width: "100%", margin: "0 auto", padding: "2rem", position: "relative" }}>
+        <div className="panel gate-panel" style={{ position: "relative" }}>
           <button
             className="secondary-btn"
             style={{ position: "absolute", top: "1rem", left: "1rem", padding: "0.2rem 0.5rem" }}
@@ -1087,7 +1094,7 @@ function App() {
               </div>
               <div className="stat-card">
                 <p>Voters</p>
-                <strong>{transactions.filter((t) => t.type === "IDENTITY_VERIFY").length}</strong>
+                <strong>{registeredVotersCount}</strong>
               </div>
             </div>
 

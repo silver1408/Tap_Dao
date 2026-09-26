@@ -512,11 +512,11 @@ select:focus {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 1rem;
   font-weight: 600;
-  color: #212529;
+  color: var(--text);
 }
 
 .voter-card .voter-info small {
-  color: #6c757d;
+  color: var(--text-muted);
   font-size: 0.8rem;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   word-break: break-all;
@@ -527,10 +527,10 @@ select:focus {
   font-size: 0.875rem;
   font-weight: 600;
   padding: 0.35rem 0.6rem;
-  border: 1px solid #dee2e6;
-  border-radius: 4px;
-  background: #f8f9fa;
-  color: #212529;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
 }
 
 /* ── Transaction Feed ── */
@@ -719,7 +719,7 @@ select:focus {
   font-family: var(--font-hand);
   font-size: 1.45rem;
   font-weight: 700;
-  color: var(--itom-charcoal);
+  color: var(--text);
 }
 
 .modal-close {
@@ -751,9 +751,10 @@ select:focus {
 }
 
 .preview-meta span {
-  border-radius: var(--sketch-radius);
-  border: 1px solid rgba(26, 26, 26, 0.35);
-  background: rgba(255, 255, 255, 0.7);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
   padding: 0.2rem 0.5rem;
   font-size: 0.7rem;
   font-weight: 600;
@@ -762,9 +763,10 @@ select:focus {
 }
 
 .preview-description {
-  border: 1px solid var(--itom-muted-light);
-  border-radius: var(--sketch-radius);
-  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
   padding: 0.85rem;
   margin-bottom: 1rem;
 }
@@ -773,6 +775,7 @@ select:focus {
   margin: 0;
   line-height: 1.55;
   white-space: pre-wrap;
+  color: var(--text);
 }
 
 .preview-hero {
@@ -913,7 +916,7 @@ select:focus {
   font-family: var(--font-hand);
   font-size: 1.4rem;
   font-weight: 700;
-  color: var(--itom-charcoal);
+  color: var(--text);
 }
 
 /* ── File Input ── */
@@ -967,12 +970,46 @@ select:focus {
   to { transform: rotate(360deg); }
 }
 
-/* ── Responsive — Larger screens ── */
-@media (min-width: 768px) {
+/* ── Gate Panel (welcome / scan screens) ── */
+.gate-panel {
+  text-align: center;
+  max-width: 400px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+/* ══════════════════════════════════════════════════
+   RESPONSIVE BREAKPOINTS
+   ══════════════════════════════════════════════════ */
+
+/* ── Tablet (≥ 640px) ── */
+@media (min-width: 640px) {
   .tab-content {
-    max-width: 600px;
+    max-width: 680px;
     margin: 0 auto;
-    padding: 1.25rem;
+    padding: 1.5rem;
+  }
+
+  .proposal-list {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+  }
+
+  .proposal-thumbnail-wrapper {
+    height: 140px;
+  }
+
+  .stats-row {
+    gap: 1rem;
+  }
+
+  .stat-card {
+    padding: 1rem 0.75rem;
+  }
+
+  .stat-card strong {
+    font-size: 1.75rem;
   }
 
   .modal-overlay {
@@ -981,22 +1018,162 @@ select:focus {
   }
 
   .modal-content {
-    border-radius: var(--sketch-radius);
+    border-radius: 16px;
     max-width: 500px;
     animation: modal-pop 250ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
   .bottom-nav {
-    max-width: 600px;
+    max-width: 680px;
     left: 50%;
     transform: translateX(-50%);
-    border-left: 1px solid var(--itom-muted-light);
-    border-right: 1px solid var(--itom-muted-light);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
     border-radius: 12px 12px 0 0;
   }
 
   .toast {
     bottom: calc(var(--nav-height) + var(--safe-bottom) + 20px);
+  }
+
+  .gate-panel {
+    max-width: 440px;
+    padding: 2.5rem;
+  }
+
+  .voter-card {
+    padding: 1.25rem;
+  }
+
+  .panel {
+    padding: 1.5rem;
+  }
+
+  .create-form {
+    gap: 1rem;
+  }
+
+  .invite-form {
+    max-width: 500px;
+  }
+}
+
+/* ── Desktop (≥ 1024px) ── */
+@media (min-width: 1024px) {
+  .tab-content {
+    max-width: 960px;
+    padding: 2rem;
+  }
+
+  .topbar {
+    padding: 1rem 2rem !important;
+  }
+
+  .stats-row {
+    gap: 1.25rem;
+  }
+
+  .stat-card {
+    padding: 1.25rem 1rem;
+  }
+
+  .stat-card strong {
+    font-size: 2rem;
+  }
+
+  .stat-card p {
+    font-size: 0.8rem;
+  }
+
+  .proposal-list {
+    gap: 1.25rem;
+  }
+
+  .proposal-card {
+    padding: 1.5rem !important;
+  }
+
+  .proposal-thumbnail-wrapper {
+    height: 160px;
+  }
+
+  .proposal-card h3 {
+    font-size: 1.1rem !important;
+  }
+
+  .proposal-card .desc {
+    -webkit-line-clamp: 3;
+  }
+
+  .bottom-nav {
+    max-width: 960px;
+  }
+
+  .gate-panel {
+    max-width: 480px;
+    padding: 3rem;
+  }
+
+  .panel {
+    padding: 1.75rem !important;
+  }
+
+  .panel h2 {
+    font-size: 1.35rem !important;
+  }
+
+  .modal-content {
+    max-width: 520px;
+    padding: 2rem 1.75rem calc(2rem + var(--safe-bottom));
+  }
+
+  .access-panel {
+    border-left-width: 4px;
+  }
+
+  .voter-card {
+    padding: 1.25rem 1.5rem;
+  }
+
+  .section-header h2 {
+    font-size: 1.5rem;
+  }
+
+  .create-form {
+    gap: 1.25rem;
+  }
+
+  .feed-row {
+    padding: 1.1rem 0.75rem !important;
+  }
+
+  .feed-label {
+    font-size: 1rem !important;
+  }
+
+  .category-pills {
+    gap: 0.5rem;
+  }
+
+  .category-pill {
+    padding: 0.4rem 1rem;
+    font-size: 0.82rem;
+  }
+}
+
+/* ── Wide Desktop (≥ 1280px) ── */
+@media (min-width: 1280px) {
+  .tab-content {
+    max-width: 1080px;
+    padding: 2rem 2.5rem;
+  }
+
+  .proposal-list {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .bottom-nav {
+    max-width: 1080px;
   }
 }
 
@@ -1299,200 +1476,6 @@ select:focus {
   gap: 0.75rem;
 }
 
-.invite-item {
-  display: flex;
-  gap: 0.75rem;
-  align-items: flex-start;
-  background: #f8f9fa;
-  border: 1px solid #dee2e6;
-  border-radius: 10px;
-  padding: 0.75rem;
-}
-
-.invite-qr-wrap {
-  flex-shrink: 0;
-}
-
-.invite-qr {
-  width: 80px;
-  height: 80px;
-  border-radius: 6px;
-  border: 1px solid #dee2e6;
-  background: #fff;
-}
-
-.invite-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  flex: 1;
-  min-width: 0;
-}
-
-.invite-meta strong {
-  font-size: 0.9rem;
-  color: #212529;
-}
-
-.invite-code {
-  font-family: var(--font-mono, monospace);
-  font-size: 0.78rem;
-  color: #198754;
-  background: #d1e7dd;
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  align-self: flex-start;
-}
-
-.invite-url {
-  font-size: 0.72rem;
-  color: #6c757d;
-  word-break: break-all;
-  line-height: 1.3;
-}
-
-.inline-icon {
-  vertical-align: middle;
-  margin-right: 0.3rem;
-  position: relative;
-  top: -1px;
-}
-
-/* ── Proposal: title row + voted badge ── */
-.proposal-title-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.6rem;
-}
-
-.proposal-title-row h3 {
-  margin: 0;
-  flex: 1;
-}
-
-.voted-badge {
-  flex-shrink: 0;
-  background: #d1e7dd;
-  color: #0a5230;
-  border: 1px solid #a3cfbb;
-  font-size: 0.7rem;
-  font-weight: 700;
-  padding: 0.2rem 0.5rem;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-.proposal-card.voted {
-  border-left: 3px solid #198754;
-}
-
-/* ── Proposal: progress track (hero bar) ── */
-.proposal-progress-track {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: #f1f3f5;
-  border-radius: 4px;
-  height: 7px;
-  margin-bottom: 0.75rem;
-  position: relative;
-  overflow: visible;
-}
-
-.progress-label {
-  position: absolute;
-  right: 0;
-  top: -18px;
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: #6c757d;
-  white-space: nowrap;
-}
-
-/* ── Category filter pills ── */
-.category-pills {
-  display: flex;
-  gap: 0.4rem;
-  overflow-x: auto;
-  padding-bottom: 0.5rem;
-  margin-bottom: 0.75rem;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-
-.category-pills::-webkit-scrollbar { display: none; }
-
-.category-pill {
-  flex-shrink: 0;
-  background: #ffffff;
-  border: 1px solid #dee2e6;
-  border-radius: 999px;
-  padding: 0.3rem 0.8rem;
-  font-size: 0.78rem;
-  font-weight: 500;
-  color: #495057;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-}
-
-.category-pill.active {
-  background: #212529;
-  color: #ffffff;
-  border-color: #212529;
-}
-
-.category-pill:hover:not(.active) {
-  background: #f8f9fa;
-  border-color: #adb5bd;
-}
-
-/* ── Session expiry warning banner ── */
-.session-warning {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 1rem;
-  background: #fff3cd;
-  border-bottom: 1px solid #ffc107;
-  color: #664d03;
-  font-size: 0.85rem;
-  font-weight: 500;
-  animation: fade-in 200ms ease;
-  gap: 0.5rem;
-}
-
-/* ── Scan button — full width, 56px+ ── */
-.scan-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  width: 100%;
-  min-height: 56px;
-  padding: 1rem;
-  font-size: 1.1rem;
-  font-weight: 600;
-  background: #ffffff;
-  border: 2px solid #212529;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #212529;
-}
-
-.scan-btn:hover {
-  background: #212529;
-  color: #ffffff;
-}
-
-.scan-btn:active {
-  transform: scale(0.98);
-}
-
 .scan-icon {
   font-size: 1.4rem;
 }
@@ -1672,17 +1655,14 @@ body {
   --primary-text: #FCF9F2;
 }
 
-/* App Constraints (Mobile-First View on Desktop) */
+/* App Constraints (Responsive — no hard cap) */
 .app-shell {
-  max-width: 480px !important;
+  max-width: 100% !important;
   margin: 0 auto !important;
   min-height: 100dvh !important;
   background: var(--bg) !important;
-  box-shadow: 0 0 40px rgba(0,0,0,0.03) !important;
   position: relative;
   overflow-x: hidden;
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
 }
 
 /* Topbar */
