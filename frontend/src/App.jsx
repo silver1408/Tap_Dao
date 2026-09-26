@@ -50,17 +50,19 @@ function NavigationBreadcrumbs({ current }) {
 // refresh still restores the member, while a fresh visitor is never handed the
 // previous member's session.
 const SESSION_HANDLE_KEY = "tapdao.sessionHandle";
-const MOBILE_DEVICE_KEY = "tapdao.mobileDeviceKey";
+const MOBILE_SCAN_SESSION_KEY = "tapdao.mobileScanSession";
 
-function readMobileDeviceKey() {
+function readMobileScanSession() {
   try {
-    const existing = window.localStorage.getItem(MOBILE_DEVICE_KEY);
+    const existing = window.sessionStorage.getItem(MOBILE_SCAN_SESSION_KEY);
     if (existing) return existing;
-    const created = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-    window.localStorage.setItem(MOBILE_DEVICE_KEY, created);
+    const created =
+      window.crypto?.randomUUID?.() ||
+      `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    window.sessionStorage.setItem(MOBILE_SCAN_SESSION_KEY, created);
     return created;
   } catch {
-    return `mobile-${Date.now()}-${Math.random()}`;
+    return `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   }
 }
 
@@ -560,7 +562,7 @@ function App() {
   // never be applied to the member who is signed in now.
   const sessionEpochRef = useRef(0);
   const handledClaimsRef = useRef(new Set());
-  const mobileDeviceKeyRef = useRef(isMobileUi ? readMobileDeviceKey() : "");
+  const mobileScanSessionRef = useRef(isMobileUi ? readMobileScanSession() : "");
   const lastTouchRef = useRef(0);
   const onSessionLostRef = useRef(null);
   const aiElapsedRef = useRef(null);
@@ -1189,7 +1191,7 @@ function App() {
       withCredentials: true,
       auth: {
         clientRole: isMobileUi ? "mobile" : "dashboard",
-        deviceKey: isMobileUi ? mobileDeviceKeyRef.current : "",
+        scanSession: isMobileUi ? mobileScanSessionRef.current : "",
       },
     });
     socketRef.current = socket;
@@ -1306,7 +1308,7 @@ function App() {
 
           const sid = socket.id || "";
           const data = await apiGet(
-            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}&deviceKey=${encodeURIComponent(mobileDeviceKeyRef.current)}`,
+            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`,
           );
 
           // Clean URL after scan
@@ -1478,7 +1480,7 @@ function App() {
     });
   };
 
-  const mobileShortcutUrl = `${window.location.origin}/scan?cardId=YOUR_CARD_ID&deviceKey=${encodeURIComponent(mobileDeviceKeyRef.current)}`;
+  const mobileShortcutUrl = `${window.location.origin}/scan?cardId=YOUR_CARD_ID&scanSession=${encodeURIComponent(mobileScanSessionRef.current)}`;
 
   // ═══ RENDER ═══
 
@@ -1600,7 +1602,7 @@ function App() {
             {copiedUrl === "mobile-scan" ? "Copied" : "Copy iPhone Shortcut URL"}
           </button>
           <p style={{ margin: "0.7rem 0 0", fontSize: "0.75rem", color: "var(--ink-muted)" }}>
-            Replace YOUR_CARD_ID in the copied URL. This pairing keeps scans on this phone.
+            Replace YOUR_CARD_ID in the copied URL. Copy it on the phone that will tap the card; it only reaches this mobile session.
           </p>
         </div>
 

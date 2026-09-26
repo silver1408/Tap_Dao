@@ -113,6 +113,9 @@ const upload = multer({
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", credentials: true } });
+// A Shortcut carries a random, browser-session-only key. Keep one exact mobile
+// socket per key so a public scan can never fan out to another phone.
+const mobileScanSockets = new Map();
 
 const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
 const addressFilePath =
@@ -1082,7 +1085,7 @@ app.get("/scan", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const cardId = String(req.query.cardId || "Unknown_Card").trim();
   const socketId = req.query.socketId || null;
-  const deviceKey = req.query.deviceKey || null;
+  const scanSession = req.query.scanSession || null;
   console.log(`\n📡 NFC SCAN DETECTED: ${cardId}`);
 
   const voter = getVoter(cardId);
@@ -1096,7 +1099,7 @@ app.get("/scan", async (req, res) => {
       cardId,
     };
 
-    emitCardScanned(socketId, deviceKey, payload);
+    emitCardScanned(socketId, scanSession, payload);
 
     return sendEncrypted(res, 200, {
       success: true,
@@ -1133,7 +1136,7 @@ app.get("/scan", async (req, res) => {
     transaction: txEntry,
   };
 
-  emitCardScanned(socketId, deviceKey, scanPayload);
+  emitCardScanned(socketId, scanSession, scanPayload);
 
   return sendEncrypted(res, 200, {
     success: true,
@@ -1166,39 +1169,32 @@ function markSocketSession(socketId, cardId) {
 }
 
 /**
- * Delivers a scan to the kiosk that asked for it. When the scan came from
- * another device (phone shortcut over the tunnel) no socket id is known, so the
- * event only goes to kiosks that are not signed in — a member who is already
- * using the kiosk must not be silently switched to somebody else's card.
+ * Delivers a scan to the exact mobile browser session that paired its Shortcut.
+ * A scan without a valid target is intentionally discarded rather than being
+ * broadcast to a shared tunnel audience.
  */
-function emitCardScanned(socketId, deviceKey, payload) {
+function emitCardScanned(socketId, scanSession, payload) {
   const target = socketId ? io.sockets.sockets.get(socketId) : null;
   if (target) {
     target.emit("card-scanned", payload);
     return;
   }
 
-  // A Shortcut request has no browser cookie or socket id. A stable device
-  // key is therefore required to select the mobile browser that paired with
-  // that Shortcut. Never broadcast an unaddressed scan to every phone on the
-  // same public tunnel.
-  if (deviceKey) {
-    for (const socket of io.sockets.sockets.values()) {
-      if (
-        socket.data &&
-        socket.data.clientRole === "mobile" &&
-        socket.data.deviceKey === deviceKey
-      ) {
-        socket.emit("card-scanned", payload);
-        return;
-      }
-    }
+  if (typeof scanSession !== "string" || !scanSession) return;
+
+  const targetSocketId = mobileScanSockets.get(scanSession);
+  const mobileSocket = targetSocketId ? io.sockets.sockets.get(targetSocketId) : null;
+  if (
+    mobileSocket &&
+    mobileSocket.data.clientRole === "mobile" &&
+    mobileSocket.data.scanSession === scanSession
+  ) {
+    mobileSocket.emit("card-scanned", payload);
     return;
   }
 
-  // Legacy callers may still provide an explicit socket id, but an unaddressed
-  // public scan must not leak to unrelated mobile browsers.
-  return;
+  // Do not leave stale socket ids behind after a mobile browser disconnects.
+  mobileScanSockets.delete(scanSession);
 }
 
 // Check token balance for a card
@@ -1529,7 +1525,7 @@ app.get("/invites", (req, res) => {
 
 app.post("/invites/redeem", async (req, res) => {
   const body = req.body || {};
-  const { code, socketId, deviceKey } = body;
+  const { code, socketId, scanSession } = body;
 
   if (!code) return res.status(400).json({ error: "Invite code required" });
 
@@ -1549,7 +1545,7 @@ app.post("/invites/redeem", async (req, res) => {
   if (!voter) {
     // Not yet registered — show registration modal (same as unregistered NFC card)
     const payload = { type: "unregistered", cardId };
-    emitCardScanned(socketId, deviceKey || null, payload);
+    emitCardScanned(socketId, scanSession || null, payload);
     console.log(`🎟️  Invite ${code} redeemed (unregistered) → cardId: ${cardId}`);
     return res.json({ success: true, registered: false, cardId });
   }
@@ -1566,7 +1562,7 @@ app.post("/invites/redeem", async (req, res) => {
 
   const claim = sessions.issueClaim(cardId);
 
-  emitCardScanned(socketId, deviceKey || null, {
+  emitCardScanned(socketId, scanSession || null, {
     type: "registered",
     cardId,
     voter: publicVoter(voter, { tokenBalance: null }),
@@ -1611,10 +1607,13 @@ io.on("connection", async (socket) => {
   const requestedRole =
     socket.handshake.auth?.clientRole || socket.handshake.query?.clientRole;
   socket.data.clientRole = requestedRole === "mobile" ? "mobile" : "dashboard";
-  socket.data.deviceKey =
+  socket.data.scanSession =
     socket.data.clientRole === "mobile"
-      ? String(socket.handshake.auth?.deviceKey || socket.handshake.query?.deviceKey || "")
+      ? String(socket.handshake.auth?.scanSession || socket.handshake.query?.scanSession || "")
       : "";
+  if (socket.data.scanSession) {
+    mobileScanSockets.set(socket.data.scanSession, socket.id);
+  }
 
   // Do not infer a mobile socket's active card from the HttpOnly cookie here.
   // The session handle lives in sessionStorage, so a cookie can survive after
@@ -1635,6 +1634,9 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("disconnect", () => {
+    if (mobileScanSockets.get(socket.data.scanSession) === socket.id) {
+      mobileScanSockets.delete(socket.data.scanSession);
+    }
     console.log("🔌 Client disconnected:", socket.id);
   });
 });
