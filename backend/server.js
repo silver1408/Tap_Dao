@@ -546,7 +546,7 @@ async function readAllProposals(voterAddress) {
     for (let i = 1; i <= Number(count); i++) {
       const p = await daoContract.getProposal(i);
       const stored = savedProposals[String(i)];
-      proposalsData.push({
+      const proposal = {
         id: Number(p.id),
         title: p.title,
         description: p.description,
@@ -555,13 +555,12 @@ async function readAllProposals(voterAddress) {
         votes: Number(p.votes),
         status: p.active ? "active" : "inactive",
         imageUrl: getProposalImage(Number(p.id)),
+        createdAt: stored?.createdAt || undefined,
       };
       if (voterAddress) {
         proposal.hasVoted = await daoContract.hasVoted(i, voterAddress);
       }
       proposalsData.push(proposal);
-        createdAt: stored?.createdAt || undefined,
-      });
     }
   } catch (e) {
     console.error("Error reading proposals:", e);
