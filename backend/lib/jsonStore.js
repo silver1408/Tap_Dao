@@ -15,6 +15,7 @@ function emptyState() {
   return {
     version: SCHEMA_VERSION,
     voters: {},
+    proposals: {},
     proposalImages: {},
     invites: {},
     transactions: [],
@@ -58,6 +59,7 @@ function createStore(options = {}) {
         ...base,
         ...parsed,
         voters: { ...base.voters, ...(parsed.voters || {}) },
+        proposals: { ...base.proposals, ...(parsed.proposals || {}) },
         proposalImages: { ...base.proposalImages, ...(parsed.proposalImages || {}) },
         invites: { ...base.invites, ...(parsed.invites || {}) },
         sessions: { ...base.sessions, ...(parsed.sessions || {}) },

@@ -296,8 +296,12 @@ function DashboardView({
   activeProposals,
   totalVotes,
   resolveMediaUrl,
+  appTheme,
+  themeIcons,
+  cycleTheme,
 }) {
   const events = transactions;
+  const [expandedProposalId, setExpandedProposalId] = useState(null);
   const eventLabel = (event) => {
     if (event.type === "PROPOSAL_CREATED") {
       return "New proposal: " + (event.proposalTitle || "Proposal #" + event.proposalId);
@@ -315,14 +319,114 @@ function DashboardView({
     return event.type || "Activity";
   };
 
+  const renderProposalCard = (proposal, isExpanded = false) => {
+    const tokensReceived = (proposal.votes || 0) * 100;
+    const fundsRequested = proposal.fundsRequested || 0;
+    const percent = fundsRequested
+      ? Math.min((tokensReceived / fundsRequested) * 100, 100).toFixed(1)
+      : "0.0";
+
+    return (
+      <article
+        className={`dashboard-proposal ${isExpanded ? "dashboard-proposal-expanded" : ""}`}
+        key={proposal.id}
+        onClick={
+          isExpanded
+            ? undefined
+            : () => setExpandedProposalId(proposal.id)
+        }
+        onKeyDown={
+          isExpanded
+            ? undefined
+            : (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setExpandedProposalId(proposal.id);
+                }
+              }
+        }
+        role={isExpanded ? undefined : "button"}
+        tabIndex={isExpanded ? undefined : 0}
+        aria-expanded={isExpanded}
+        aria-label={`${proposal.title}. ${isExpanded ? "Expanded proposal details" : "Expand proposal details"}.`}
+      >
+        {proposal.imageUrl ? (
+          <img
+            src={resolveMediaUrl(proposal.imageUrl)}
+            alt=""
+            className="dashboard-proposal-image"
+          />
+        ) : null}
+        <div className="dashboard-proposal-body">
+          <div className="dashboard-proposal-title">
+            <h3>{proposal.title}</h3>
+            <span className={proposal.status === "active" ? "status-pill active" : "status-pill"}>
+              {proposal.status}
+            </span>
+          </div>
+          <p className="dashboard-proposal-summary">
+            {proposal.description || "No description provided."}
+          </p>
+          <div className="dashboard-progress">
+            <span style={{ width: percent + "%" }} />
+          </div>
+          <div className="dashboard-proposal-meta">
+            <span>{proposal.category}</span>
+            <span>{proposal.votes || 0} votes</span>
+          </div>
+          {isExpanded ? (
+            <div className="dashboard-proposal-details">
+              <button
+                type="button"
+                className="dashboard-detail-close"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpandedProposalId(null);
+                }}
+                aria-label="Close proposal details"
+              >
+                Close details
+              </button>
+              <p>{proposal.description || "No description provided."}</p>
+              <dl className="dashboard-proposal-facts">
+                <div>
+                  <dt>Status</dt>
+                  <dd>{proposal.status || "Unknown"}</dd>
+                </div>
+                <div>
+                  <dt>Funding status</dt>
+                  <dd>{tokensReceived}/{fundsRequested} tokens ({percent}%)</dd>
+                </div>
+              </dl>
+            </div>
+          ) : null}
+        </div>
+      </article>
+    );
+  };
+
+  const expandedProposal = proposals.find((proposal) => proposal.id === expandedProposalId);
+  const remainingProposals = expandedProposal
+    ? proposals.filter((proposal) => proposal.id !== expandedProposal.id)
+    : [];
+
   return (
-    <div className="dashboard-shell">
+    <div className={`dashboard-shell theme-${appTheme}`}>
       <header className="dashboard-header">
         <div>
           <NavigationBreadcrumbs current="dashboard" />
           <h1>Governance Dashboard</h1>
         </div>
         <div className="dashboard-actions">
+          <button
+            type="button"
+            className="dashboard-theme-button"
+            onClick={cycleTheme}
+            title={`Theme: ${appTheme}`}
+            aria-label={`Theme: ${appTheme}. Click to change.`}
+          >
+            {themeIcons[appTheme]}
+          </button>
           <span className={connected ? "dashboard-live live" : "dashboard-live"}>
             <span className="dot" />
             {connected ? "Live" : "Offline"}
@@ -355,50 +459,40 @@ function DashboardView({
               <p className="dashboard-kicker">On chain</p>
               <h2>All proposals</h2>
             </div>
-            <span className="dashboard-count">{proposals.length}</span>
+            {expandedProposal ? (
+              <button
+                type="button"
+                className="dashboard-show-all"
+                onClick={() => setExpandedProposalId(null)}
+              >
+                ← All proposals
+              </button>
+            ) : (
+              <span className="dashboard-count">{proposals.length}</span>
+            )}
           </div>
           {loading ? (
             <div className="dashboard-empty">Loading proposals...</div>
           ) : proposals.length === 0 ? (
             <div className="dashboard-empty">No proposals have been created yet.</div>
           ) : (
-            <div className="dashboard-proposals">
-              {proposals.map((proposal) => {
-                const tokensReceived = (proposal.votes || 0) * 100;
-                const percent = Math.min(
-                  (tokensReceived / (proposal.fundsRequested || 1)) * 100,
-                  100,
-                ).toFixed(1);
-                return (
-                  <article className="dashboard-proposal" key={proposal.id}>
-                    {proposal.imageUrl ? (
-                      <img
-                        src={resolveMediaUrl(proposal.imageUrl)}
-                        alt=""
-                        className="dashboard-proposal-image"
-                      />
-                    ) : null}
-                    <div className="dashboard-proposal-body">
-                      <div className="dashboard-proposal-title">
-                        <h3>{proposal.title}</h3>
-                        <span className={proposal.status === "active" ? "status-pill active" : "status-pill"}>
-                          {proposal.status}
-                        </span>
-                      </div>
-                      <p>{proposal.description || "No description provided."}</p>
-                      <div className="dashboard-progress">
-                        <span style={{ width: percent + "%" }} />
-                      </div>
-                      <div className="dashboard-proposal-meta">
-                        <span>{proposal.category}</span>
-                        <span>{proposal.votes || 0} votes</span>
-                        <span>{tokensReceived}/{proposal.fundsRequested} tokens</span>
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+            <>
+              <div className={`dashboard-proposals dashboard-proposals-desktop ${expandedProposal ? "has-expanded" : ""}`}>
+                {expandedProposal ? renderProposalCard(expandedProposal, true) : null}
+                {expandedProposal ? (
+                  <div className="dashboard-proposal-list">
+                    {remainingProposals.map((proposal) => renderProposalCard(proposal))}
+                  </div>
+                ) : (
+                  proposals.map((proposal) => renderProposalCard(proposal))
+                )}
+              </div>
+              <div className="dashboard-proposals dashboard-proposals-mobile">
+                {proposals.map((proposal) =>
+                  renderProposalCard(proposal, expandedProposalId === proposal.id),
+                )}
+              </div>
+            </>
           )}
         </section>
 
@@ -1475,6 +1569,9 @@ function App() {
         activeProposals={activeProposals}
         totalVotes={totalVotes}
         resolveMediaUrl={resolveMediaUrl}
+        appTheme={appTheme}
+        themeIcons={themeIcons}
+        cycleTheme={cycleTheme}
       />
     );
   }

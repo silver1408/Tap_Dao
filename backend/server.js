@@ -387,14 +387,107 @@ function addTransaction(entry) {
   return transaction;
 }
 
+// ── Proposal persistence helpers ──
+function saveProposalToStore(proposal) {
+  store.mutate((state) => {
+    state.proposals[String(proposal.id)] = {
+      title: proposal.title,
+      description: proposal.description || "",
+      category: proposal.category || "General",
+      fundsRequested: proposal.fundsRequested || 0,
+      votes: proposal.votes || 0,
+      imageUrl: proposal.imageUrl || "",
+      status: proposal.status || "active",
+      createdAt: proposal.createdAt || new Date().toISOString(),
+    };
+  });
+}
+
+function updateProposalVotesInStore(proposalId, votes) {
+  store.mutate((state) => {
+    const saved = state.proposals[String(proposalId)];
+    if (saved) {
+      saved.votes = votes;
+    }
+  });
+}
+
+function listSavedProposals() {
+  const saved = store.getState().proposals;
+  return Object.entries(saved).map(([id, p]) => ({ ...p, id: Number(id) }));
+}
+
+// Replay persisted proposals onto a fresh blockchain (called at startup)
+async function replayProposalsOnChain() {
+  if (!adminContract) return 0;
+  const saved = listSavedProposals();
+  if (saved.length === 0) return 0;
+
+  // Check if proposals already exist on-chain
+  let onChainCount = 0;
+  try {
+    onChainCount = Number(await daoContract.proposalCount());
+  } catch (_e) { /* fresh chain */ }
+
+  if (onChainCount >= saved.length) {
+    console.log(`   ✅ Chain already has ${onChainCount} proposals, skipping replay.`);
+    return 0;
+  }
+
+  console.log(`   🔄 Replaying ${saved.length - onChainCount} proposals onto fresh chain...`);
+
+  // Sort by ID so they are recreated in order
+  saved.sort((a, b) => a.id - b.id);
+
+  // Ensure admin has enough tokens to create proposals
+  const adminBalance = Number(await daoContract.getTokenBalance(adminSigner.address));
+  const needed = (saved.length - onChainCount) * 100;
+  if (adminBalance < needed) {
+    try {
+      const isInit = await daoContract.isInitialized(adminSigner.address);
+      if (!isInit) {
+        const allocTx = await adminContract.allocateTokens(adminSigner.address, needed + 1000);
+        await allocTx.wait();
+      }
+    } catch (e) {
+      console.error("   ⚠️  Could not allocate admin tokens for replay:", e.reason || e.message);
+      return 0;
+    }
+  }
+
+  let replayed = 0;
+  for (const proposal of saved) {
+    if (proposal.id <= onChainCount) continue;
+    try {
+      const tx = await adminContract.createProposal(
+        proposal.title,
+        proposal.description,
+        proposal.category,
+        proposal.fundsRequested,
+      );
+      await tx.wait();
+      if (proposal.imageUrl) {
+        saveProposalImage(proposal.id, proposal.imageUrl);
+      }
+      replayed++;
+    } catch (e) {
+      console.error(`   ❌ Failed to replay proposal "${proposal.title}":`, e.reason || e.message);
+    }
+  }
+  console.log(`   ✅ Replayed ${replayed} proposals successfully.`);
+  return replayed;
+}
+
 // Helper to read all proposals from blockchain
 async function readAllProposals() {
   const proposalsData = [];
   if (!daoContract) return proposalsData;
   try {
     const count = await daoContract.proposalCount();
+    const savedProposals = store.getState().proposals;
     for (let i = 1; i <= Number(count); i++) {
       const p = await daoContract.getProposal(i);
+      const stored = savedProposals[String(i)];
       proposalsData.push({
         id: Number(p.id),
         title: p.title,
@@ -404,6 +497,7 @@ async function readAllProposals() {
         votes: Number(p.votes),
         status: p.active ? "active" : "inactive",
         imageUrl: getProposalImage(Number(p.id)),
+        createdAt: stored?.createdAt || undefined,
       });
     }
   } catch (e) {
