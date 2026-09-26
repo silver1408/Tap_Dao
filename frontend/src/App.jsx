@@ -1602,7 +1602,7 @@ function App() {
             onClick={() => copyToClipboard(mobileShortcutUrl, "mobile-scan")}
           >
             {copiedUrl === "mobile-scan" ? <Check size={16} /> : <Copy size={16} />}
-            {copiedUrl === "mobile-scan" ? "Copied" : "Copy iPhone Shortcut URL"}
+            {copiedUrl === "mobile-scan" ? "Device ID Copied" : "Copy Device ID"}
           </button>
           <p style={{ margin: "0.7rem 0 0", fontSize: "0.75rem", color: "var(--ink-muted)" }}>
             Replace YOUR_CARD_ID in the copied URL. Copy it on the phone that will tap the card; it only reaches this mobile session.
