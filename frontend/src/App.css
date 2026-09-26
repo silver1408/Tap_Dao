@@ -60,6 +60,26 @@
 .status.online { color: #198754; border-color: #198754; background: #d1e7dd; }
 .status.offline { color: #dc3545; border-color: #dc3545; background: #f8d7da; }
 
+.mobile-dashboard-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.mobile-dashboard-link:hover {
+  border-color: var(--border-hover);
+  background: var(--bg);
+}
+
 .dot {
   width: 8px;
   height: 8px;
@@ -2269,4 +2289,61 @@ p, span, div {
 /* ── Theme Adaptations for Topbar & Bottom Nav ── */
 .topbar, .bottom-nav {
   background: color-mix(in srgb, var(--surface) 85%, transparent) !important;
+}
+
+/* Keep the mobile brand, breadcrumbs, and account controls from competing for
+   the same narrow horizontal space. */
+@media (max-width: 639px) {
+  .topbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem !important;
+  }
+
+  .topbar-brand {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .topbar-brand .breadcrumbs {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    gap: 0.3rem;
+    padding-bottom: 0.15rem;
+    font-size: 0.62rem;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+
+  .topbar-brand .breadcrumbs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .topbar-right {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 0.4rem;
+  }
+
+  .identity-badge {
+    min-width: 0;
+    max-width: 42vw;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .identity-badge span:not(.badge-avatar) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-dashboard-link,
+  .status {
+    min-height: 34px;
+  }
 }

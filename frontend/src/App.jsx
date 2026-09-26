@@ -320,17 +320,16 @@ function DashboardView({
       <header className="dashboard-header">
         <div>
           <NavigationBreadcrumbs current="dashboard" />
-          <p className="dashboard-kicker">Tap DAO / Operations</p>
           <h1>Governance Dashboard</h1>
-          <p className="dashboard-subtitle">
-            Live proposals and member activity. Card taps never change this view.
-          </p>
         </div>
         <div className="dashboard-actions">
           <span className={connected ? "dashboard-live live" : "dashboard-live"}>
             <span className="dot" />
             {connected ? "Live" : "Offline"}
           </span>
+          <a className="dashboard-mobile-link" href="/mobile">
+            Mobile voting
+          </a>
         </div>
       </header>
 
@@ -1625,6 +1624,9 @@ function App() {
             <span className="dot" />
             <span>{connected ? "Live" : "Off"}</span>
           </div>
+          <a className="mobile-dashboard-link" href="/dashboard">
+            Governance
+          </a>
           {currentVoter && (
             <button 
               type="button" 
