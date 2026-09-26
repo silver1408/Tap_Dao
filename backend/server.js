@@ -441,14 +441,21 @@ function addTransaction(entry) {
 }
 
 // Helper to read all proposals from blockchain
-async function readAllProposals() {
+// Reads every proposal from the chain.
+//
+// `voterAddress` is the wallet of the member making the request (public data,
+// resolved from the session card — no PIN needed). When supplied, each
+// proposal also carries `hasVoted`: whether THAT wallet already voted on THAT
+// proposal. Voting is per proposal, so this is looked up per id. Broadcasts
+// pass no address and keep the chain-only shape.
+async function readAllProposals(voterAddress) {
   const proposalsData = [];
   if (!daoContract) return proposalsData;
   try {
     const count = await daoContract.proposalCount();
     for (let i = 1; i <= Number(count); i++) {
       const p = await daoContract.getProposal(i);
-      proposalsData.push({
+      const proposal = {
         id: Number(p.id),
         title: p.title,
         description: p.description,
@@ -457,7 +464,11 @@ async function readAllProposals() {
         votes: Number(p.votes),
         status: p.active ? "active" : "inactive",
         imageUrl: getProposalImage(Number(p.id)),
-      });
+      };
+      if (voterAddress) {
+        proposal.hasVoted = await daoContract.hasVoted(i, voterAddress);
+      }
+      proposalsData.push(proposal);
     }
   } catch (e) {
     console.error("Error reading proposals:", e);
@@ -884,14 +895,38 @@ app.post("/register", async (req, res) => {
 // ─────────────────────────────────────────────
 
 // Get all proposals from the SMART CONTRACT
+/**
+ * The wallet address of whoever is signed in on this kiosk, or "" when nobody
+ * is. The address is public data derived from the NFC card id and is stored in
+ * the voter record, so it can be resolved WITHOUT the PIN — the private key
+ * stays sealed in the vault and is only ever touched by `unlockWithPin`.
+ * Used to answer "has this wallet voted on this proposal?" authoritatively.
+ */
+function sessionWalletAddress(req) {
+  const raw = sessions.activeFromRequest(req);
+  if (!raw) return "";
+  const cardId = raw.record && raw.record.cardId;
+  if (!cardId) return "";
+  const voter = store.getState().voters[cardId];
+  const address = voter && typeof voter.wallet === "string" ? voter.wallet.trim() : "";
+  return address;
+}
+
 app.get("/proposals", async (req, res) => {
   if (!ensureContractReady(res)) return;
-  return sendEncrypted(res, 200, await readAllProposals());
+  // Signed in: include a per-proposal `hasVoted` flag for this member's wallet
+  // so the UI can show the real state after a reload. Anonymous: chain-only.
+  return sendEncrypted(res, 200, await readAllProposals(sessionWalletAddress(req)));
 });
 
 const IMAGE_URL_PATTERN = /^\/uploads\/[A-Za-z0-9._-]+$/;
 
-// Create a new proposal (costs 200 tokens: deducted from creator)
+// Create a new proposal (costs PROPOSAL_CREATION_FEE tokens)
+//
+// Creating a proposal is deliberately NOT a voting action: the contract does
+// not touch any voting state here, so a member who already voted on one
+// proposal can still submit new ones, and a member who only creates proposals
+// keeps their vote available on every proposal.
 app.post("/proposals", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const data = readEncryptedBody(req);
@@ -966,7 +1001,6 @@ app.post("/proposals", async (req, res) => {
       saveProposalImage(newCount, imageUrl);
     }
 
-    // Explicitly emit vote event for the creator (since they are now part of the 1 vote)
     const p = await daoContract.getProposal(newCount);
     const proposalObj = {
       id: Number(p.id),
@@ -979,15 +1013,17 @@ app.post("/proposals", async (req, res) => {
       status: p.active ? "active" : "inactive",
     };
 
+    // Recorded as a proposal, not as a vote: the creator has not voted yet.
     const txEntry = addTransaction({
-      type: "VOTE_CAST", // It acts as a vote
+      type: "PROPOSAL_CREATED",
       hash: tx.hash,
     });
 
     const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
 
-    // Emit the vote-recorded so it pushes up to frontend instantly
-    io.emit("vote-recorded", {
+    // `proposal-created` (not `vote-recorded`) so the feed and the dashboards
+    // never imply that the creator cast a vote.
+    io.emit("proposal-created", {
       voter: { name: "Creator", wallet: signer.address, tokenBalance: updatedBalance },
       proposal: proposalObj,
       transaction: txEntry,
@@ -1000,13 +1036,15 @@ app.post("/proposals", async (req, res) => {
     return sendEncrypted(res, 200, {
       success: true,
       transactionHash: tx.hash,
+      // The creator's own balance changed, so hand it back for the response.
+      tokenBalance: updatedBalance,
     });
   } catch (e) {
     console.error("❌ Failed to create proposal:", e.reason || e.message);
     return sendEncrypted(res, 500, {
       error:
         e.reason ||
-        "Failed to create proposal. Ensure you have 200 tokens and haven't voted.",
+        "Failed to create proposal. Ensure you have enough tokens for the creation fee.",
     });
   }
 });
@@ -1360,6 +1398,12 @@ app.post("/vote", async (req, res) => {
     return sendEncrypted(res, 200, {
       success: true,
       transactionHash: tx.hash,
+      // Voted on THIS proposal, not "voted somewhere": the UI keys the badge
+      // and the button state by proposalId so other proposals stay votable.
+      proposalId: Number(proposalId),
+      hasVoted: true,
+      // Voting spent tokens, so hand the balance back for the UI refresh.
+      tokenBalance: updatedBalance,
     });
   } catch (e) {
     console.error("❌ Blockchain error:", e.reason || e.message);

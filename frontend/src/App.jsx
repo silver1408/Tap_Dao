@@ -219,7 +219,28 @@ function PinModal({ action, onSubmit, onCancel, error }) {
 }
 
 // ─── ProposalPreview Modal ───
-function ProposalPreview({ proposal, imageUrl, onClose, onVote, currentVoter }) {
+
+/**
+ * Merge a chain-only proposal list into the one on screen.
+ *
+ * Socket broadcasts (`proposals-updated`, `vote-recorded`) are identical for
+ * every member and carry no per-member state, so their objects have no
+ * `hasVoted` flag. Replacing the list with them would erase the signed-in
+ * member's own per-proposal votes — e.g. any proposal creation anywhere would
+ * make an unrelated member's "✓ Vote Cast" badge disappear. The flag is kept
+ * from the previous state, which is only ever populated from the authenticated
+ * `/proposals` response for this member's wallet.
+ */
+function mergeProposals(incoming, previous) {
+  if (!Array.isArray(incoming)) return previous;
+  return incoming.map((proposal) => {
+    const existing = previous.find((p) => p.id === proposal.id);
+    if (!existing || existing.hasVoted === undefined) return proposal;
+    return { ...proposal, hasVoted: existing.hasVoted };
+  });
+}
+
+function ProposalPreview({ proposal, imageUrl, onClose, onVote, currentVoter, hasVoted }) {
   if (!proposal) return null;
 
   const tokensReceived = (proposal.votes || 0) * 100;
@@ -251,13 +272,25 @@ function ProposalPreview({ proposal, imageUrl, onClose, onVote, currentVoter }) 
         </div>
 
         {currentVoter ? (
-          <button
-            type="button"
-            className="primary-btn btn-block"
-            onClick={() => onVote(proposal)}
-          >
-            Vote for This Proposal
-          </button>
+          hasVoted ? (
+            // One vote per wallet per proposal: this proposal is spent, the
+            // member's other proposals are not.
+            <button
+              type="button"
+              className="primary-btn btn-block"
+              disabled
+            >
+              ✓ Vote Cast
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="primary-btn btn-block"
+              onClick={() => onVote(proposal)}
+            >
+              Vote for This Proposal
+            </button>
+          )
         ) : (
           <p className="error-text" style={{ textAlign: "center" }}>
             Scan your card first to vote
@@ -765,16 +798,28 @@ function App() {
     async (pin) => {
       if (!pinModal || !currentVoter?.cardId) return;
       setPinError("");
+      const votedId = pinModal.proposalId;
       try {
-        await apiPost("/vote", {
-          proposalId: pinModal.proposalId,
+        const result = await apiPost("/vote", {
+          proposalId: votedId,
           pin,
           cardId: currentVoter.cardId,
         });
         // Haptic feedback on success
         navigator.vibrate?.([100, 50, 100]);
-        // Track voted proposal locally
-        setVotedProposalIds((prev) => new Set([...prev, pinModal.proposalId]));
+        // Record the vote against THIS proposal id only, so the member can
+        // still vote on every other proposal.
+        setVotedProposalIds((prev) => new Set([...prev, votedId]));
+        setProposals((prev) =>
+          prev.map((p) =>
+            p.id === votedId ? { ...p, hasVoted: result?.hasVoted !== false } : p,
+          ),
+        );
+        if (typeof result?.tokenBalance === "number") {
+          setCurrentVoter((prev) =>
+            prev ? { ...prev, tokenBalance: result.tokenBalance } : prev,
+          );
+        }
         notify(`Vote submitted for "${pinModal.proposalTitle}"`);
         setPinModal(null);
         setPreviewProposal(null);
@@ -868,7 +913,7 @@ function App() {
       }
 
       try {
-        await apiPost("/proposals", {
+        const created = await apiPost("/proposals", {
           title: form.title.trim(),
           description: form.description.trim(),
           category: form.category,
@@ -877,9 +922,16 @@ function App() {
           pin,
           cardId: currentVoter.cardId,
         });
+        // Creating a proposal spends the creation fee, so refresh this member's
+        // balance from the response (the socket event also carries it).
+        if (created && typeof created.tokenBalance === "number") {
+          setCurrentVoter((prev) =>
+            prev ? { ...prev, tokenBalance: created.tokenBalance } : prev,
+          );
+        }
         setForm({ title: "", description: "", category: "General", fiatBudget: "", imageFile: null });
         setPinModal(null);
-        notify("Proposal created! 200 tokens deducted.");
+        notify("Proposal created! 100 tokens deducted.");
         setIntendedAction("read");
         setActiveTab("vote");
       } catch (error) {
@@ -985,7 +1037,7 @@ function App() {
     });
 
     socket.on("proposals-updated", (payload) => {
-      setProposals(payload || []);
+      setProposals((prev) => mergeProposals(payload, prev));
     });
 
     socket.on("card-scanned", (payload) => {
@@ -1031,9 +1083,31 @@ function App() {
         });
     });
 
-    socket.on("vote-recorded", (payload) => {
+    socket.on("proposal-created", (payload) => {
       setProposals((prev) =>
         prev.map((p) => (p.id === payload.proposal.id ? payload.proposal : p)),
+      );
+      if (payload.transaction) {
+        const enrichedTx = { ...payload.transaction, proposalTitle: payload.proposal.title };
+        setTransactions((prev) => [enrichedTx, ...prev].slice(0, 20));
+      }
+      // Only the creator's own balance is refreshed: a shared kiosk must not
+      // copy another member's details onto this session.
+      const current = sessionRef.current;
+      const currentWallet = current && current.voter && current.voter.wallet;
+      const creatorWallet = payload.voter && payload.voter.wallet;
+      if (payload.voter && currentWallet && creatorWallet === currentWallet) {
+        setCurrentVoter((prev) => (prev ? { ...prev, ...payload.voter } : prev));
+      }
+      notify(`Proposal "${payload.proposal.title}" submitted`);
+    });
+
+    socket.on("vote-recorded", (payload) => {
+      setProposals((prev) =>
+        mergeProposals(
+          prev.map((p) => (p.id === payload.proposal.id ? payload.proposal : p)),
+          prev,
+        ),
       );
       if (payload.transaction) {
         // Enrich transaction with proposal title for human-readable feed
@@ -1178,6 +1252,28 @@ function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Session: server-authoritative idle window with activity renewal ──
+  // `hasVoted` is per member, and `/proposals` only returns it once a session
+  // exists. The list is first loaded anonymously on mount, so it must be
+  // re-fetched when somebody signs in (and again for the next member, who has
+  // a different wallet and therefore different flags).
+  useEffect(() => {
+    if (!currentVoter?.cardId) return undefined;
+    let cancelled = false;
+    apiGet("/proposals")
+      .then((decoded) => {
+        if (cancelled) return;
+        setProposals(Array.isArray(decoded) ? decoded : []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch once per signed-in member
+  }, [currentVoter?.cardId]);
+
   useEffect(() => {
     onSessionLostRef.current = (code) => {
       // Another member took the kiosk over, or this browser never held a
@@ -1544,7 +1640,12 @@ function App() {
                   if (rawPercent < 33) barColor = "#EF4444";
                   else if (rawPercent < 66) barColor = "#F59E0B";
 
-                  const hasVoted = votedProposalIds.has(proposal.id);
+                  // Per proposal, never global: the server marks `hasVoted`
+                  // for THIS wallet on THIS proposal id, and the local set
+                  // holds the votes this session just cast. A vote on one
+                  // card must not lock the member out of the others.
+                  const hasVoted =
+                    Boolean(proposal.hasVoted) || votedProposalIds.has(proposal.id);
 
                   return (
                     <article
@@ -1775,7 +1876,7 @@ function App() {
                           Number(form.fiatBudget) > 10000 ? "B (5,000 Token Goal)" : "C (1,000 Token Goal)"
                       }</strong>
                       <p style={{ fontSize: "0.80rem", color: "green", margin: 0 }}>
-                        Submission requires 200 tokens (100 creation fee + 100 auto-vote).
+                        Submission requires 100 tokens (creation fee). Voting is a separate action.
                       </p>
                     </div>
                   ) : null}
@@ -1916,6 +2017,7 @@ function App() {
                   <div className="feed-list">
                     {transactions.slice(0, isFeedExpanded ? transactions.length : 5).map((tx) => {
                       const isVote = tx.type === "VOTE_CAST";
+                      const isProposal = tx.type === "PROPOSAL_CREATED";
                       const timeAgo = (() => {
                         const diff = Math.floor((Date.now() - new Date(tx.timestamp).getTime()) / 1000);
                         if (diff < 60) return `${diff}s ago`;
@@ -1924,12 +2026,14 @@ function App() {
                       })();
                       return (
                         <div key={`${tx.hash}-${tx.id}`} className="feed-row">
-                          <span className="feed-icon">{isVote ? "\uD83D\uDDF3\uFE0F" : "\uD83C\uDD94"}</span>
+                          <span className="feed-icon">{isVote ? "\uD83D\uDDF3\uFE0F" : isProposal ? "\uD83D\uDCDD" : "\uD83C\uDD94"}</span>
                           <div className="feed-body">
                             <span className="feed-label">
                               {isVote
                                 ? tx.proposalTitle ? `Voted on "${tx.proposalTitle}"` : "Vote cast"
-                                : "Identity verified"}
+                                : isProposal
+                                  ? tx.proposalTitle ? `Proposed "${tx.proposalTitle}"` : "Proposal submitted"
+                                  : "Identity verified"}
                             </span>
                             <small className="feed-time">{timeAgo}</small>
                           </div>
@@ -1995,6 +2099,9 @@ function App() {
           onClose={() => setPreviewProposal(null)}
           onVote={startVoteFlow}
           currentVoter={currentVoter}
+          hasVoted={
+            Boolean(previewProposal.hasVoted) || votedProposalIds.has(previewProposal.id)
+          }
         />
       ) : null}
 
