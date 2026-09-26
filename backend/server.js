@@ -207,6 +207,9 @@ const sessions = createSessionManager({
   cookieName: process.env.SESSION_COOKIE_NAME || "tapdao_sid",
   idleTtlMs: Number(process.env.SESSION_IDLE_TTL_MS || 0) || undefined,
   absoluteTtlMs: Number(process.env.SESSION_ABSOLUTE_TTL_MS || 0) || undefined,
+  // A card session belongs to its mobile browser. A scan on another device
+  // must never invalidate the dashboard or another card's session.
+  supersedeOthers: false,
 });
 sessions.startReaper();
 
@@ -276,9 +279,9 @@ function authorizeSession(req, res) {
   return raw;
 }
 
-function issueSession(req, res, cardId) {
+function issueSession(req, res, cardId, options = {}) {
   const previous = sessions.fromRequest(req);
-  const session = sessions.issue(cardId);
+  const session = sessions.issue(cardId, options);
   sessions.attach(res, session, wantsSecureCookie(req));
   if (previous && previous.record.cardId !== cardId) {
     logSessionSwitch(previous.record.cardId, cardId);
@@ -377,7 +380,9 @@ function listInvites() {
 }
 
 function addTransaction(entry) {
-  return store.pushTransaction(entry);
+  const transaction = store.pushTransaction(entry);
+  io.emit("activity-event", transaction);
+  return transaction;
 }
 
 // Helper to read all proposals from blockchain
@@ -686,6 +691,29 @@ app.post("/session/claim", (req, res) => {
     return sendEncrypted(res, 400, { error: "Invalid encrypted payload" });
   }
 
+  const pendingClaim = sessions.peekClaim(data.claim);
+  if (!pendingClaim) {
+    return sendEncrypted(res, 401, {
+      error: "This scan has already been used or expired. Tap your card again.",
+      code: "CLAIM_INVALID",
+    });
+  }
+
+  const existing = sessions.fromRequest(req);
+  const handle = claimedHandle(req);
+  if (
+    existing &&
+    !existing.superseded &&
+    handle &&
+    sessions.handleMatches(existing, handle) &&
+    existing.record.cardId !== pendingClaim.cardId
+  ) {
+    return sendEncrypted(res, 409, {
+      error: "A card session is already active. Sign out before switching cards.",
+      code: "SESSION_SWITCH_REQUIRED",
+    });
+  }
+
   const claim = sessions.consumeClaim(data.claim);
   if (!claim) {
     return sendEncrypted(res, 401, {
@@ -702,9 +730,12 @@ app.post("/session/claim", (req, res) => {
     });
   }
 
-  // The kiosk is now this member's device: take the session over from whoever
-  // was signed in before.
-  const session = issueSession(req, res, claim.cardId);
+  // The claim belongs to the mobile browser that redeemed it. Other mobile
+  // cards and the dashboard keep their own sessions.
+  const session = issueSession(req, res, claim.cardId, {
+    kind: "mobile",
+    supersedeOthers: false,
+  });
 
   markSocketSession(data.socketId, claim.cardId);
 
@@ -801,7 +832,10 @@ app.post("/register", async (req, res) => {
     console.error("Token allocation error:", e.reason || e.message);
   }
 
-  const session = issueSession(req, res, normalizedCardId);
+  const session = issueSession(req, res, normalizedCardId, {
+    kind: "mobile",
+    supersedeOthers: false,
+  });
   markSocketSession(req.query && req.query.socketId, normalizedCardId);
 
   // Broadcast registration event
@@ -881,6 +915,13 @@ app.post("/proposals", async (req, res) => {
   const signer = unlockWithPin(session, pin, vault.encryptedPayload);
   if (!signer) {
     console.error("❌ Proposal creation failed: Wrong PIN!");
+    addTransaction({
+      type: "PROPOSAL_CREATE_FAILED",
+      hash: null,
+      proposalTitle: title.trim().slice(0, 200),
+      status: "failed",
+      error: "Incorrect PIN",
+    });
     return sendEncrypted(res, 401, {
       error: "Incorrect PIN. Vault failed to open.",
       code: "PIN_INVALID",
@@ -920,8 +961,11 @@ app.post("/proposals", async (req, res) => {
     };
 
     const txEntry = addTransaction({
-      type: "VOTE_CAST", // It acts as a vote
+      type: "PROPOSAL_CREATED",
       hash: tx.hash,
+      proposalId: proposalObj.id,
+      proposalTitle: proposalObj.title,
+      status: "success",
     });
 
     const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
@@ -943,6 +987,13 @@ app.post("/proposals", async (req, res) => {
     });
   } catch (e) {
     console.error("❌ Failed to create proposal:", e.reason || e.message);
+    addTransaction({
+      type: "PROPOSAL_CREATE_FAILED",
+      hash: null,
+      proposalTitle: title.trim().slice(0, 200),
+      status: "failed",
+      error: e.reason || "Blockchain proposal creation failed",
+    });
     return sendEncrypted(res, 500, {
       error:
         e.reason ||
@@ -1068,12 +1119,8 @@ app.get("/scan", async (req, res) => {
     state.voters[cardId] = { ...voter, lastSeenAt: new Date().toISOString() };
   });
 
-  const session = issueSession(req, res, cardId);
-  markSocketSession(socketId, cardId);
-
-  // The HTTP caller (kiosk-side scan) gets a cookie. A scan triggered from a
-  // member's phone gets a single-use claim instead, which the kiosk exchanges
-  // for its own isolated session — no session material is broadcast.
+  // A scan never creates a browser session. It creates a short-lived,
+  // single-use claim that a mobile UI can redeem after receiving the event.
   const claim = sessions.issueClaim(cardId);
   const scanPayload = {
     type: "registered",
@@ -1092,7 +1139,8 @@ app.get("/scan", async (req, res) => {
     voter: publicVoter(voter, { tokenBalance: null }),
     cardId,
     tokenBalance: null, // Hidden until the PIN is verified
-    session: sessions.publicView(session),
+    claim: claim.token,
+    claimExpiresAt: claim.expiresAt,
   });
 });
 
@@ -1127,7 +1175,13 @@ function emitCardScanned(socketId, payload) {
     return;
   }
   for (const socket of io.sockets.sockets.values()) {
-    if (!socket.data || !socket.data.session) socket.emit("card-scanned", payload);
+    if (
+      socket.data &&
+      socket.data.clientRole === "mobile" &&
+      !socket.data.session
+    ) {
+      socket.emit("card-scanned", payload);
+    }
   }
 }
 
@@ -1244,6 +1298,13 @@ app.post("/vote", async (req, res) => {
   const signer = unlockWithPin(session, pin, vault.encryptedPayload);
   if (!signer) {
     console.error("❌ Decryption failed: Wrong PIN or tampered payload!");
+    addTransaction({
+      type: "VOTE_FAILED",
+      hash: null,
+      proposalId: Number(proposalId),
+      status: "failed",
+      error: "Incorrect PIN",
+    });
     return sendEncrypted(res, 401, {
       error: "Incorrect PIN. Vault failed to open.",
       code: "PIN_INVALID",
@@ -1274,7 +1335,13 @@ app.post("/vote", async (req, res) => {
       status: p.active ? "active" : "inactive",
     };
 
-    const txEntry = addTransaction({ type: "VOTE_CAST", hash: tx.hash });
+    const txEntry = addTransaction({
+      type: "VOTE_CAST",
+      hash: tx.hash,
+      proposalId: proposalObj.id,
+      proposalTitle: proposalObj.title,
+      status: "success",
+    });
     const voter = vault.voter;
     if (voter) {
       store.mutate((state) => {
@@ -1303,6 +1370,13 @@ app.post("/vote", async (req, res) => {
     });
   } catch (e) {
     console.error("❌ Blockchain error:", e.reason || e.message);
+    addTransaction({
+      type: "VOTE_FAILED",
+      hash: null,
+      proposalId: Number(proposalId),
+      status: "failed",
+      error: e.reason || "Blockchain execution failed",
+    });
     return sendEncrypted(res, 500, {
       error: e.reason || "Blockchain execution failed",
     });
@@ -1474,7 +1548,6 @@ app.post("/invites/redeem", async (req, res) => {
     tokenBalance = Number(await daoContract.getTokenBalance(voter.wallet));
   } catch (_) {}
 
-  const session = issueSession(req, res, cardId);
   const claim = sessions.issueClaim(cardId);
 
   emitCardScanned(socketId, {
@@ -1491,7 +1564,8 @@ app.post("/invites/redeem", async (req, res) => {
     name: voter.name,
     voter: publicVoter(voter, { tokenBalance: null }),
     cardId,
-    session: sessions.publicView(session),
+    claim: claim.token,
+    claimExpiresAt: claim.expiresAt,
   });
 });
 
@@ -1518,7 +1592,12 @@ app.use((err, req, res, next) => {
 io.on("connection", async (socket) => {
   console.log("🔌 Client connected:", socket.id);
 
-  const connectedSession = currentSession(socket.request);
+  const requestedRole =
+    socket.handshake.auth?.clientRole || socket.handshake.query?.clientRole;
+  socket.data.clientRole = requestedRole === "mobile" ? "mobile" : "dashboard";
+
+  const connectedSession =
+    socket.data.clientRole === "mobile" ? currentSession(socket.request) : null;
   socket.data.session = connectedSession
     ? { cardId: connectedSession.record.cardId }
     : null;

@@ -153,6 +153,7 @@ function createStore(options = {}) {
     return mutate((current) => {
       const record = {
         id: current.nextTransactionId,
+        ...entry,
         type: entry.type,
         hash: entry.hash,
         timestamp: entry.timestamp || new Date().toISOString(),
