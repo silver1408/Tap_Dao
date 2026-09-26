@@ -21,24 +21,72 @@ const { createSessionManager } = require("./lib/sessionManager");
 
 const app = express();
 app.disable("x-powered-by");
-app.set("trust proxy", true);
+// Behind the Cloudflare Tunnel every request arrives over HTTPS on a local
+// port, so the forwarded protocol header is the only reliable source for
+// req.secure. TRUST_PROXY=0 is only for running the API directly.
+const TRUST_PROXY = String(process.env.TRUST_PROXY || "1").toLowerCase();
+app.set(
+  "trust proxy",
+  TRUST_PROXY === "0" || TRUST_PROXY === "false"
+    ? false
+    : TRUST_PROXY === "loopback"
+      ? "loopback"
+      : true,
+);
+
+/**
+ * Reduces a configured public URL to a comparable `scheme://host[:port]`
+ * origin: no trailing slash, no path, no query. Cloudflare sometimes hands out
+ * a value with a trailing slash or an ingress path, and a mismatch there would
+ * silently break CORS.
+ */
+function normalizePublicUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(withScheme).origin.toLowerCase();
+  } catch (_error) {
+    return "";
+  }
+}
+
+// Production topology: the kiosk UI is served from https://tap.kiyoai.in and
+// this API is public at https://tap-back.kiyoai.in. Only the UI origin may send
+// credentialed requests; every other origin is rejected outright.
+const PUBLIC_APP_URL = normalizePublicUrl(process.env.PUBLIC_APP_URL);
+const PUBLIC_API_URL = normalizePublicUrl(process.env.PUBLIC_API_URL);
 
 const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || "")
   .split(",")
-  .map((value) => value.trim())
+  .map((value) => normalizePublicUrl(value))
   .filter(Boolean);
+
+if (ALLOWED_ORIGINS.length === 0 && PUBLIC_APP_URL) ALLOWED_ORIGINS.push(PUBLIC_APP_URL);
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // same-origin / server-to-server / curl
+  return ALLOWED_ORIGINS.includes(normalizePublicUrl(origin));
+}
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
-        return callback(null, true);
-      }
-      return callback(null, false);
+      // Never reflect an arbitrary origin: an allow-list miss gets no CORS
+      // headers at all, so the browser blocks the (credentialed) request.
+      callback(null, isAllowedOrigin(origin));
     },
     credentials: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "X-Session-Handle"],
+    maxAge: 86400,
   }),
 );
+// Responses differ per Origin, so caches must key on it.
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
 app.use(express.json({ limit: "256kb" }));
 
 // Serve built frontend (from frontend/dist/) at root — this is the kiosk UI
@@ -482,7 +530,14 @@ async function replayProposalsOnChain() {
 }
 
 // Helper to read all proposals from blockchain
-async function readAllProposals() {
+// Reads every proposal from the chain.
+//
+// `voterAddress` is the wallet of the member making the request (public data,
+// resolved from the session card — no PIN needed). When supplied, each
+// proposal also carries `hasVoted`: whether THAT wallet already voted on THAT
+// proposal. Voting is per proposal, so this is looked up per id. Broadcasts
+// pass no address and keep the chain-only shape.
+async function readAllProposals(voterAddress) {
   const proposalsData = [];
   if (!daoContract) return proposalsData;
   try {
@@ -500,6 +555,11 @@ async function readAllProposals() {
         votes: Number(p.votes),
         status: p.active ? "active" : "inactive",
         imageUrl: getProposalImage(Number(p.id)),
+      };
+      if (voterAddress) {
+        proposal.hasVoted = await daoContract.hasVoted(i, voterAddress);
+      }
+      proposalsData.push(proposal);
         createdAt: stored?.createdAt || undefined,
       });
     }
@@ -957,14 +1017,38 @@ app.post("/register", async (req, res) => {
 // ─────────────────────────────────────────────
 
 // Get all proposals from the SMART CONTRACT
+/**
+ * The wallet address of whoever is signed in on this kiosk, or "" when nobody
+ * is. The address is public data derived from the NFC card id and is stored in
+ * the voter record, so it can be resolved WITHOUT the PIN — the private key
+ * stays sealed in the vault and is only ever touched by `unlockWithPin`.
+ * Used to answer "has this wallet voted on this proposal?" authoritatively.
+ */
+function sessionWalletAddress(req) {
+  const raw = sessions.activeFromRequest(req);
+  if (!raw) return "";
+  const cardId = raw.record && raw.record.cardId;
+  if (!cardId) return "";
+  const voter = store.getState().voters[cardId];
+  const address = voter && typeof voter.wallet === "string" ? voter.wallet.trim() : "";
+  return address;
+}
+
 app.get("/proposals", async (req, res) => {
   if (!ensureContractReady(res)) return;
-  return sendEncrypted(res, 200, await readAllProposals());
+  // Signed in: include a per-proposal `hasVoted` flag for this member's wallet
+  // so the UI can show the real state after a reload. Anonymous: chain-only.
+  return sendEncrypted(res, 200, await readAllProposals(sessionWalletAddress(req)));
 });
 
 const IMAGE_URL_PATTERN = /^\/uploads\/[A-Za-z0-9._-]+$/;
 
-// Create a new proposal (costs 200 tokens: deducted from creator)
+// Create a new proposal (costs PROPOSAL_CREATION_FEE tokens)
+//
+// Creating a proposal is deliberately NOT a voting action: the contract does
+// not touch any voting state here, so a member who already voted on one
+// proposal can still submit new ones, and a member who only creates proposals
+// keeps their vote available on every proposal.
 app.post("/proposals", async (req, res) => {
   if (!ensureContractReady(res)) return;
   const data = readEncryptedBody(req);
@@ -1046,7 +1130,6 @@ app.post("/proposals", async (req, res) => {
       saveProposalImage(newCount, imageUrl);
     }
 
-    // Explicitly emit vote event for the creator (since they are now part of the 1 vote)
     const p = await daoContract.getProposal(newCount);
     const proposalObj = {
       id: Number(p.id),
@@ -1059,6 +1142,7 @@ app.post("/proposals", async (req, res) => {
       status: p.active ? "active" : "inactive",
     };
 
+    // Recorded as a proposal, not as a vote: the creator has not voted yet.
     const txEntry = addTransaction({
       type: "PROPOSAL_CREATED",
       hash: tx.hash,
@@ -1069,8 +1153,9 @@ app.post("/proposals", async (req, res) => {
 
     const updatedBalance = Number(await daoContract.getTokenBalance(signer.address));
 
-    // Emit the vote-recorded so it pushes up to frontend instantly
-    io.emit("vote-recorded", {
+    // `proposal-created` (not `vote-recorded`) so the feed and the dashboards
+    // never imply that the creator cast a vote.
+    io.emit("proposal-created", {
       voter: { name: "Creator", wallet: signer.address, tokenBalance: updatedBalance },
       proposal: proposalObj,
       transaction: txEntry,
@@ -1083,6 +1168,8 @@ app.post("/proposals", async (req, res) => {
     return sendEncrypted(res, 200, {
       success: true,
       transactionHash: tx.hash,
+      // The creator's own balance changed, so hand it back for the response.
+      tokenBalance: updatedBalance,
     });
   } catch (e) {
     console.error("❌ Failed to create proposal:", e.reason || e.message);
@@ -1096,7 +1183,7 @@ app.post("/proposals", async (req, res) => {
     return sendEncrypted(res, 500, {
       error:
         e.reason ||
-        "Failed to create proposal. Ensure you have 200 tokens and haven't voted.",
+        "Failed to create proposal. Ensure you have enough tokens for the creation fee.",
     });
   }
 });
@@ -1473,6 +1560,12 @@ app.post("/vote", async (req, res) => {
     return sendEncrypted(res, 200, {
       success: true,
       transactionHash: tx.hash,
+      // Voted on THIS proposal, not "voted somewhere": the UI keys the badge
+      // and the button state by proposalId so other proposals stay votable.
+      proposalId: Number(proposalId),
+      hasVoted: true,
+      // Voting spent tokens, so hand the balance back for the UI refresh.
+      tokenBalance: updatedBalance,
     });
   } catch (e) {
     console.error("❌ Blockchain error:", e.reason || e.message);
@@ -1497,6 +1590,24 @@ const CLOUDFLARED_LOG = process.env.CLOUDFLARED_LOG
   ? path.resolve(process.env.CLOUDFLARED_LOG)
   : path.join(__dirname, "..", "cloudflared.log");
 let cachedTunnelUrl = null;
+
+/**
+ * The join link for an invite must open the kiosk UI, never the API. Prefer the
+ * configured production origin, fall back to the quick-tunnel URL when running
+ * the throwaway tunnel, and only then to a local address (development).
+ */
+function publicAppUrl(req) {
+  if (PUBLIC_APP_URL) return PUBLIC_APP_URL;
+  const origin = req && typeof req.get === "function" ? req.get("origin") : "";
+  if (origin && isAllowedOrigin(origin)) return normalizePublicUrl(origin);
+  const tunnelUrl = extractTunnelUrl();
+  if (tunnelUrl) return normalizePublicUrl(tunnelUrl);
+  return `http://localhost:${port}`;
+}
+
+function publicApiUrl() {
+  return PUBLIC_API_URL || PUBLIC_APP_URL || `http://localhost:${port}`;
+}
 
 function extractTunnelUrl() {
   if (cachedTunnelUrl) return cachedTunnelUrl;
@@ -1525,20 +1636,13 @@ setInterval(() => {
 
 app.get("/tunnel-info", (req, res) => {
   const tunnelUrl = extractTunnelUrl();
-  const nets = require("os").networkInterfaces();
-  let lanIp = "localhost";
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === "IPv4" && !net.internal) {
-        lanIp = net.address;
-        break;
-      }
-    }
-  }
   return res.json({
+    // The public UI, for share links and QR codes.
+    appUrl: publicAppUrl(req),
+    // The public API the browser should call.
+    apiUrl: publicApiUrl(),
     tunnelUrl: tunnelUrl || null,
-    lanUrl: `http://${lanIp}:${port}`,
-    tunnelReady: !!tunnelUrl,
+    tunnelReady: Boolean(tunnelUrl || PUBLIC_APP_URL),
   });
 });
 
@@ -1579,9 +1683,7 @@ app.post("/invites/generate", (req, res) => {
   });
   console.log(`🎟️  Invite generated: ${code} → cardId: ${cardId}`);
 
-  const tunnelUrl = extractTunnelUrl();
-  const baseUrl = tunnelUrl || `http://localhost:${port}`;
-  const joinUrl = `${baseUrl}/?invite=${code}`;
+  const joinUrl = `${publicAppUrl(req)}/?invite=${code}`;
 
   return res.json({ code, cardId, label, joinUrl, expiresAt });
 });
@@ -1591,9 +1693,7 @@ app.get("/invites/qr/:code", async (req, res) => {
   const invite = listInvites()[code];
   if (!invite) return res.status(404).json({ error: "Invite not found" });
 
-  const tunnelUrl = extractTunnelUrl();
-  const baseUrl = tunnelUrl || `http://localhost:${port}`;
-  const joinUrl = `${baseUrl}/?invite=${code}`;
+  const joinUrl = `${publicAppUrl(req)}/?invite=${code}`;
 
   try {
     const png = await QRCode.toBuffer(joinUrl, { width: 300, margin: 2 });

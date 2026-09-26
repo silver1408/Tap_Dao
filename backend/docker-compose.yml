@@ -1,10 +1,27 @@
+# ============================================================
+#  Tap DAO — backend only (API + local chain)
+# ============================================================
+#  Companion to the root docker-compose.yml, which additionally builds the
+#  React frontend. Use this file when the API is deployed on its own host and
+#  https://tap.kiyoai.in is served elsewhere.
+#
+#  Public API origin: https://tap-back.kiyoai.in
+#  Every setting below has a working DEMO default, so the stack starts with no
+#  .env file. Run it with the root .env when both are present:
+#      docker compose --env-file ../.env up -d --build
+# ============================================================
+
 services:
   hardhat:
     build: .
     restart: unless-stopped
+    environment:
+      HARDHAT_NETWORK: hardhat
     command: npx hardhat node --hostname 0.0.0.0
-    ports:
-      - "8545:8545"
+    expose:
+      - "8545"
+    volumes:
+      - hardhat-state:/root/.hardhat
     healthcheck:
       test:
         - CMD-SHELL
@@ -36,27 +53,40 @@ services:
       deploy:
         condition: service_completed_successfully
     environment:
-      PORT: 3001
+      PORT: ${BACKEND_PORT:-9200}
       RPC_URL: http://hardhat:8545
       ADDRESS_FILE: /app/runtime/address.json
       DATA_DIR: /app/runtime
       UPLOAD_DIR: /app/uploads
-      COLAB_AI_URL: ${COLAB_AI_URL:-}
-      CRYPTO_SECRET_KEY: ${CRYPTO_SECRET_KEY:-}
-      SESSION_SECRET: ${SESSION_SECRET:-}
-      SESSION_IDLE_TTL_MS: ${SESSION_IDLE_TTL_MS:-}
-      SESSION_ABSOLUTE_TTL_MS: ${SESSION_ABSOLUTE_TTL_MS:-}
+
+      # The kiosk UI origin that is allowed to make credentialed requests.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://tap.kiyoai.in}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://tap-back.kiyoai.in}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://tap.kiyoai.in}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+
+      CRYPTO_SECRET_KEY: ${CRYPTO_SECRET_KEY:-8e18648a20e5d3e0e6710f8a24516e3745cc54ffb72b384b25e7760cdb4bc7ff}
+      SESSION_SECRET: ${SESSION_SECRET:-98439fe9c1680d6c2f0eddcece833b39e11e696ca20d37dfa33384a8b1200d32}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-tapdao_sid}
+      SESSION_IDLE_TTL_MS: ${SESSION_IDLE_TTL_MS:-1800000}
+      SESSION_ABSOLUTE_TTL_MS: ${SESSION_ABSOLUTE_TTL_MS:-43200000}
+      # Cross-origin UI + API: required, otherwise the session cookie is dropped.
+      SESSION_COOKIE_SAME_SITE: ${SESSION_COOKIE_SAME_SITE:-none}
       COOKIE_SECURE: ${COOKIE_SECURE:-auto}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5242880}
+      COLAB_AI_URL: ${COLAB_AI_URL:-}
+      CLOUDFLARED_LOG: /app/runtime/cloudflared.log
     volumes:
       - runtime-data:/app/runtime
       - uploads-data:/app/uploads
     ports:
-      - "3001:9201"
+      # Loopback only, so only a host-level cloudflared can reach the API.
+      - "127.0.0.1:${BACKEND_PORT:-9200}:${BACKEND_PORT:-9200}"
     healthcheck:
       test:
         - CMD-SHELL
-        - node -e "require('http').get({hostname:'127.0.0.1',port:9201,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+        - node -e "require('http').get({hostname:'127.0.0.1',port:process.env.PORT||9200,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
       interval: 10s
       timeout: 5s
       retries: 12
@@ -66,3 +96,4 @@ services:
 volumes:
   runtime-data:
   uploads-data:
+  hardhat-state:

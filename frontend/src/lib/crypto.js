@@ -1,9 +1,12 @@
 import CryptoJS from "crypto-js";
 
-// Must match the backend (backend/lib/crypto.js). Configure both sides with the
-// same value; the fallback keeps the demo working without any .env file.
+// Must match the backend (backend/lib/crypto.js) and is inlined into the bundle
+// at build time, so it is a shared transport key rather than a server secret.
+// The public development fallback only exists for `npm run dev`; a production
+// build without VITE_CRYPTO_SECRET_KEY is rejected in vite.config.js.
 const SECRET_KEY =
-  import.meta.env.VITE_CRYPTO_SECRET_KEY || "your-very-strong-secret-key";
+  import.meta.env.VITE_CRYPTO_SECRET_KEY ||
+  (import.meta.env.DEV ? "your-very-strong-secret-key" : "");
 
 export function encrypt(text) {
   if (!text) return "";

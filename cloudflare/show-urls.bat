@@ -2,21 +2,29 @@
 title Tap DAO - Cloudflare URLs
 echo.
 echo ============================================
-echo   Tap DAO - Cloudflare Public URLs
+echo   Tap DAO - Public URLs
 echo ============================================
 echo.
-
-echo   BACKEND (port 9200):
-findstr "trycloudflare.com" "%~dp0cf-backend.log" 2>nul | findstr "https://" || echo   (not ready yet - try again in a few seconds)
-
+echo   FRONTEND:
+echo     https://tap.kiyoai.in
 echo.
-echo   FRONTEND (port 9100):
-findstr "trycloudflare.com" "%~dp0cf-frontend.log" 2>nul | findstr "https://" || echo   (not ready yet - try again in a few seconds)
-
+echo   API / BACKEND:
+echo     https://tap-back.kiyoai.in
+echo.
+echo   API health check:
+echo     https://tap-back.kiyoai.in/health
 echo.
 echo ============================================
-echo   Tip: URLs change every time you restart.
-echo   Local phone: use your LAN IP instead.
+echo   These hostnames are served by your Cloudflare Tunnel.
+echo   If they do not open, run start-cloudflare.bat
+echo   and check cloudflare\cf-tunnel.log.
 echo ============================================
+echo.
+echo Tunnel status (last lines):
+if exist "%~dp0cf-tunnel.log" (
+  powershell -NoProfile -Command "Get-Content '%~dp0cf-tunnel.log' -Tail 5" 2>nul
+) else (
+  echo   (no tunnel log yet)
+)
 echo.
 pause
