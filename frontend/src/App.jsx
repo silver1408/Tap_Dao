@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
-import { ClipboardList, PenTool, Activity, Copy, Check, Globe, Link, Users, Sun, Moon, Coffee, Monitor, LogOut } from "lucide-react";
+import { ClipboardList, PenTool, Activity, Copy, Check, Globe, Link, Users, Sun, Moon, Coffee, Monitor, LogOut, Vote, PlusCircle, ChevronDown, Settings2 } from "lucide-react";
 import { decrypt, encrypt } from "./lib/crypto";
 
 // ─── API / Socket origins ───
@@ -1846,13 +1846,12 @@ function App() {
           <NavigationBreadcrumbs current="mobile" />
         </div>
         <div className="topbar-right">
-          <div className="theme-toggles">
-            <button type="button" className="theme-btn active" onClick={cycleTheme} title={`Theme: ${appTheme}`}>
-              {themeIcons[appTheme]}
-            </button>
-          </div>
+          <button type="button" className="theme-btn active" onClick={cycleTheme} title={`Theme: ${appTheme}`} aria-label={`Theme: ${appTheme}`}>
+            {themeIcons[appTheme]}
+          </button>
           {currentVoter ? (
-            <div
+            <button
+              type="button"
               className="identity-badge"
               onClick={() => {
                 setPinError("");
@@ -1867,7 +1866,7 @@ function App() {
                   {currentVoter.tokenBalance}t
                 </span>
               ) : null}
-            </div>
+            </button>
           ) : null}
           <div className={`status ${connected ? "online" : "offline"}`}>
             <span className="dot" />
@@ -1972,7 +1971,7 @@ function App() {
               </div>
             ) : proposals.length === 0 ? (
               <div className="empty-state">
-                <div className="empty-icon">📋</div>
+                <ClipboardList className="empty-icon" size={32} aria-hidden="true" />
                 <p>No proposals yet. Create the first one!</p>
               </div>
             ) : (
@@ -2258,6 +2257,11 @@ function App() {
         {/* ─── ACTIVITY TAB ─── */}
         {activeTab === "activity" && (
           <>
+            <details className="admin-tools">
+              <summary>
+                <span><Settings2 size={17} aria-hidden="true" /> Admin tools</span>
+                <ChevronDown size={17} aria-hidden="true" />
+              </summary>
             {/* ─ V2: Access Panel – Public endpoints & Invite ─ */}
             <div className="panel access-panel">
               <h2><Globe size={18} className="inline-icon" /> Remote Access</h2>
@@ -2353,13 +2357,18 @@ function App() {
               )}
             </div>
 
+            </details>
+
             {/* Transaction Feed */}
             <div className="panel">
-              <h2>Transaction Feed</h2>
+              <div className="section-header">
+                <h2><Activity size={18} className="inline-icon" /> Activity</h2>
+                <span className="section-count">{transactions.length}</span>
+              </div>
               {transactions.length === 0 ? (
                 <div className="empty-state">
-                  <div className="empty-icon">No Data</div>
-                  <p>No transactions yet. Scan a card or cast a vote.</p>
+                  <Activity className="empty-icon" size={32} aria-hidden="true" />
+                  <p>No activity yet. Proposal and voting events will appear here.</p>
                 </div>
               ) : (
                 <>
@@ -2376,7 +2385,9 @@ function App() {
                       })();
                       return (
                         <div key={`${tx.hash}-${tx.id}`} className="feed-row">
-                          <span className="feed-icon">{isFailure ? "!" : isVote ? "\uD83D\uDDF3\uFE0F" : "\uD83C\uDD94"}</span>
+                          <span className={`feed-icon ${isFailure ? "failed" : ""}`} aria-hidden="true">
+                            {isFailure ? "!" : isVote ? <Vote size={17} /> : isProposal ? <PlusCircle size={17} /> : <ClipboardList size={17} />}
+                          </span>
                           <div className="feed-body">
                             <span className="feed-label">
                               {isVote
@@ -2404,10 +2415,12 @@ function App() {
               )}
             </div>
 
-            {/* Connection debug */}
-            <div className="panel">
-              <h2>Connection</h2>
-              <p>Socket: {connected ? `Connected (${socketId})` : "Disconnected"}</p>
+            {/* Connection status */}
+            <div className="connection-status">
+              <span>Connection</span>
+              <strong className={connected ? "connected" : "disconnected"}>
+                {connected ? `Connected (${socketId})` : "Disconnected"}
+              </strong>
             </div>
           </>
         )}
@@ -2420,7 +2433,7 @@ function App() {
           className={`nav-tab ${activeTab === "vote" ? "active" : ""}`}
           onClick={() => setActiveTab("vote")}
         >
-          <span className="nav-icon">✓</span>
+          <Vote className="nav-icon" size={20} strokeWidth={2} aria-hidden="true" />
           <span>Vote</span>
         </button>
         <button
@@ -2428,7 +2441,7 @@ function App() {
           className={`nav-tab ${activeTab === "create" ? "active" : ""}`}
           onClick={() => setActiveTab("create")}
         >
-          <span className="nav-icon">+</span>
+          <PlusCircle className="nav-icon" size={20} strokeWidth={2} aria-hidden="true" />
           <span>Create</span>
         </button>
         <button
@@ -2436,7 +2449,7 @@ function App() {
           className={`nav-tab ${activeTab === "activity" ? "active" : ""}`}
           onClick={() => setActiveTab("activity")}
         >
-          <span className="nav-icon">•</span>
+          <Activity className="nav-icon" size={20} strokeWidth={2} aria-hidden="true" />
           <span>Activity</span>
         </button>
       </nav>
