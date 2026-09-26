@@ -932,8 +932,9 @@ function App() {
         const data = await apiPost("/register", { cardId, name, pin });
         setRegisterCardId(null);
         applySession({ ...data.voter, cardId }, data.session);
-        setIntendedAction("read");
-        setActiveTab("vote");
+        const nextAction = intendedAction === "write" ? "write" : "read";
+        setIntendedAction(nextAction);
+        setActiveTab(nextAction === "write" ? "create" : "vote");
         notify(`Welcome, ${data.voter.name}! Card registered with 1000 tokens.`);
       } catch (error) {
         setRegisterError(error.message);
@@ -941,7 +942,7 @@ function App() {
         setRegisterLoading(false);
       }
     },
-    [apiPost, applySession, notify],
+    [apiPost, applySession, intendedAction, notify],
   );
 
   // ── Cast Vote ──
@@ -1161,7 +1162,9 @@ function App() {
         });
         if (data && data.voter) {
           signIn(data.voter, data.session);
-          setIntendedAction("read");
+          const nextAction = intendedAction === "write" ? "write" : "read";
+          setIntendedAction(nextAction);
+          setActiveTab(nextAction === "write" ? "create" : "vote");
           if (payload.transaction) {
             setTransactions((prev) => {
               if (prev.some((entry) => entry.id === payload.transaction.id)) return prev;
@@ -1180,7 +1183,7 @@ function App() {
         }
       }
     },
-    [apiPost, isMobileUi, notify, signIn],
+    [apiPost, intendedAction, isMobileUi, notify, signIn],
   );
 
   // ── Socket.IO Setup ──
