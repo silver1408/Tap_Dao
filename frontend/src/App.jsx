@@ -50,6 +50,19 @@ function NavigationBreadcrumbs({ current }) {
 // refresh still restores the member, while a fresh visitor is never handed the
 // previous member's session.
 const SESSION_HANDLE_KEY = "tapdao.sessionHandle";
+const MOBILE_DEVICE_KEY = "tapdao.mobileDeviceKey";
+
+function readMobileDeviceKey() {
+  try {
+    const existing = window.localStorage.getItem(MOBILE_DEVICE_KEY);
+    if (existing) return existing;
+    const created = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    window.localStorage.setItem(MOBILE_DEVICE_KEY, created);
+    return created;
+  } catch {
+    return `mobile-${Date.now()}-${Math.random()}`;
+  }
+}
 
 function readSessionHandle() {
   try {
@@ -547,6 +560,7 @@ function App() {
   // never be applied to the member who is signed in now.
   const sessionEpochRef = useRef(0);
   const handledClaimsRef = useRef(new Set());
+  const mobileDeviceKeyRef = useRef(isMobileUi ? readMobileDeviceKey() : "");
   const lastTouchRef = useRef(0);
   const onSessionLostRef = useRef(null);
   const aiElapsedRef = useRef(null);
@@ -1173,7 +1187,10 @@ function App() {
       path: "/socket.io",
       transports: ["websocket", "polling"],
       withCredentials: true,
-      auth: { clientRole: isMobileUi ? "mobile" : "dashboard" },
+      auth: {
+        clientRole: isMobileUi ? "mobile" : "dashboard",
+        deviceKey: isMobileUi ? mobileDeviceKeyRef.current : "",
+      },
     });
     socketRef.current = socket;
 
@@ -1289,7 +1306,7 @@ function App() {
 
           const sid = socket.id || "";
           const data = await apiGet(
-            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}`,
+            `/scan?cardId=${encodeURIComponent(cardFromUrl)}&socketId=${encodeURIComponent(sid)}&deviceKey=${encodeURIComponent(mobileDeviceKeyRef.current)}`,
           );
 
           // Clean URL after scan
@@ -1461,6 +1478,8 @@ function App() {
     });
   };
 
+  const mobileShortcutUrl = `${window.location.origin}/scan?cardId=YOUR_CARD_ID&deviceKey=${encodeURIComponent(mobileDeviceKeyRef.current)}`;
+
   // ═══ RENDER ═══
 
   // ─── GATE: Entry / Welcome ───
@@ -1571,6 +1590,18 @@ function App() {
               Submit
             </button>
           </div>
+          <button
+            type="button"
+            className="secondary-btn btn-block"
+            style={{ marginTop: "1rem" }}
+            onClick={() => copyToClipboard(mobileShortcutUrl, "mobile-scan")}
+          >
+            {copiedUrl === "mobile-scan" ? <Check size={16} /> : <Copy size={16} />}
+            {copiedUrl === "mobile-scan" ? "Copied" : "Copy iPhone Shortcut URL"}
+          </button>
+          <p style={{ margin: "0.7rem 0 0", fontSize: "0.75rem", color: "var(--ink-muted)" }}>
+            Replace YOUR_CARD_ID in the copied URL. This pairing keeps scans on this phone.
+          </p>
         </div>
 
         {registerCardId ? (
