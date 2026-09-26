@@ -1,31 +1,21 @@
-const { Ollama } = require("ollama");
+// ─────────────────────────────────────────────────────────────────────────────
+//  proposalSummaryService.js
+//
+//  AI backend for proposal generation & summarisation.
+//  Uses a free model running on Google Colab instead of paid APIs.
+//
+//  HOW TO SET UP:
+//    1. Open colab/tap_dao_ai_server.py in Google Colab and run it.
+//    2. Copy the printed public URL (e.g. https://xxxx.ngrok-free.app).
+//    3. Add it to backend/.env:
+//         COLAB_AI_URL=https://xxxx.ngrok-free.app
+//    4. Restart this server.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────
-//  FEATHERLESS AI CONFIG (OpenAI-compatible)
-// ─────────────────────────────────────────────
-const FEATHERLESS_API_KEY = process.env.FEATHERLESS_API_KEY || "";
-const FEATHERLESS_BASE_URL =
-  process.env.FEATHERLESS_BASE_URL || "https://api.featherless.ai/v1";
-const FEATHERLESS_MODEL =
-  process.env.FEATHERLESS_MODEL || "meta-llama/Llama-3.2-3B-Instruct";
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+const COLAB_AI_URL = (process.env.COLAB_AI_URL || "").replace(/\/$/, ""); // strip trailing slash
 
-// ─────────────────────────────────────────────
-//  OLLAMA CONFIG (legacy, used for summaries)
-// ─────────────────────────────────────────────
-const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY;
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "https://ollama.com";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gpt-oss:120b";
-
-const ollama = new Ollama({
-  host: OLLAMA_HOST,
-  ...(OLLAMA_API_KEY
-    ? { headers: { Authorization: `Bearer ${OLLAMA_API_KEY}` } }
-    : {}),
-});
-
-// ─────────────────────────────────────────────
-//  VALID CATEGORIES
-// ─────────────────────────────────────────────
+// ── VALID CATEGORIES (must match the smart contract) ─────────────────────────
 const VALID_CATEGORIES = [
   "General",
   "Infrastructure",
@@ -35,123 +25,75 @@ const VALID_CATEGORIES = [
   "Health",
 ];
 
-// ─────────────────────────────────────────────
-//  PROPOSAL GENERATION (Featherless AI)
-// ─────────────────────────────────────────────
-
-function buildGeneratePrompt(userText) {
-  return [
-    "You are a civic governance assistant that converts informal descriptions into structured DAO proposals.",
-    "",
-    "Given the user's plain-language description below, extract or generate:",
-    '1. "title" — A clear, concise proposal title (max 10 words)',
-    '2. "description" — A formal 2-3 sentence description of the problem and proposed solution',
-    `3. "category" — One of: ${VALID_CATEGORIES.join(", ")}`,
-    "",
-    "IMPORTANT: Respond with ONLY valid JSON, no markdown, no code fences, no explanation.",
-    'Format: {"title": "...", "description": "...", "category": "..."}',
-    "",
-    "User's description:",
-    userText,
-  ].join("\n");
-}
-
-async function generateProposalFromDescription(userText) {
-  if (!FEATHERLESS_API_KEY) {
+// ── INTERNAL: call Colab server with a timeout ────────────────────────────────
+async function callColab(endpoint, body) {
+  if (!COLAB_AI_URL) {
     throw new Error(
-      "FEATHERLESS_API_KEY is required. Set it in backend/.env to enable AI proposal generation.",
+      "COLAB_AI_URL is not set. " +
+        "Run colab/tap_dao_ai_server.py on Google Colab, then paste the " +
+        "public URL into backend/.env as COLAB_AI_URL=https://xxxx.ngrok-free.app"
     );
   }
 
-  const response = await fetch(
-    `${FEATHERLESS_BASE_URL}/chat/completions`,
-    {
+  const url = `${COLAB_AI_URL}${endpoint}`;
+  const controller = new AbortController();
+  // 60 s timeout — Colab on CPU can be slow on first inference (model warm-up)
+  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+
+  let response;
+  try {
+    response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${FEATHERLESS_API_KEY}`,
+        // Required to bypass ngrok's browser interstitial page
+        "ngrok-skip-browser-warning": "true",
       },
-      body: JSON.stringify({
-        model: FEATHERLESS_MODEL,
-        messages: [
-          { role: "user", content: buildGeneratePrompt(userText) },
-        ],
-        temperature: 0.4,
-        max_tokens: 400,
-      }),
-    },
-  );
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error(
+        "Colab AI server timed out (60 s). " +
+          "Make sure the Colab notebook is still running and the tunnel is active."
+      );
+    }
+    throw new Error(
+      `Cannot reach Colab AI server at ${COLAB_AI_URL}. ` +
+        "Check that the Colab notebook is still running."
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
-    console.error(
-      `Featherless API error ${response.status}: ${errorBody}`,
-    );
-    throw new Error(
-      `AI service returned ${response.status}. Check your FEATHERLESS_API_KEY.`,
-    );
+    const body = await response.text().catch(() => "");
+    throw new Error(`Colab AI server returned HTTP ${response.status}: ${body.slice(0, 200)}`);
   }
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "";
+  return response.json();
+}
 
-  // Parse JSON from response — handle models that wrap in code fences
-  // or append extra text after the JSON object.
-  let cleaned = content.trim();
-  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    cleaned = fenceMatch[1].trim();
-  }
+// ── PUBLIC: Generate a structured proposal from plain-text description ─────────
+async function generateProposalFromDescription(userText) {
+  const data = await callColab("/generate", { text: userText });
 
-  // Extract first JSON object by finding matching braces
-  let parsed;
-  const jsonStart = cleaned.indexOf("{");
-  if (jsonStart !== -1) {
-    let depth = 0;
-    let jsonEnd = -1;
-    for (let i = jsonStart; i < cleaned.length; i++) {
-      if (cleaned[i] === "{") depth++;
-      else if (cleaned[i] === "}") depth--;
-      if (depth === 0) {
-        jsonEnd = i + 1;
-        break;
-      }
-    }
-    if (jsonEnd > jsonStart) {
-      try {
-        parsed = JSON.parse(cleaned.slice(jsonStart, jsonEnd));
-      } catch (_e) {
-        // fall through to error
-      }
-    }
-  }
-
-  if (!parsed) {
-    console.error("Failed to parse AI response as JSON:", cleaned.slice(0, 500));
-    throw new Error(
-      "AI returned an unexpected format. Please try again or rephrase your description.",
-    );
-  }
-
-  // Validate and sanitize
-  const title =
-    typeof parsed.title === "string" ? parsed.title.trim() : "";
+  // Validate & sanitise
+  const title = typeof data.title === "string" ? data.title.trim() : "";
   const description =
-    typeof parsed.description === "string"
-      ? parsed.description.trim()
-      : "";
+    typeof data.description === "string" ? data.description.trim() : "";
   const rawCategory =
-    typeof parsed.category === "string" ? parsed.category.trim() : "";
+    typeof data.category === "string" ? data.category.trim() : "";
 
-  // Match category case-insensitively
   const category =
     VALID_CATEGORIES.find(
-      (c) => c.toLowerCase() === rawCategory.toLowerCase(),
+      (c) => c.toLowerCase() === rawCategory.toLowerCase()
     ) || "General";
 
   if (!title) {
     throw new Error(
-      "AI could not generate a title. Please provide more detail in your description.",
+      "AI could not generate a title. Please provide more detail in your description."
     );
   }
 
@@ -159,61 +101,31 @@ async function generateProposalFromDescription(userText) {
     title,
     description,
     category,
-    model: FEATHERLESS_MODEL,
+    model: data.model || "colab-flan-t5-large",
   };
 }
 
-// ─────────────────────────────────────────────
-//  PROPOSAL SUMMARY (Ollama — existing)
-// ─────────────────────────────────────────────
-
-function buildSummaryPrompt(title, description) {
-  return [
-    "You are a civic governance assistant.",
-    "Task: Summarize the core problem from the proposal in very simple language.",
-    "Output rules:",
-    "- Return only 1 or 2 short sentences.",
-    "- Keep it concise and plain.",
-    "- Do not include headings, bullets, or extra explanation.",
-    "",
-    `Proposal Title: ${title}`,
-    "",
-    "Proposal Description:",
-    description || "No description provided.",
-  ].join("\n");
-}
-
+// ── PUBLIC: Summarise the problem a proposal is trying to solve ───────────────
 async function summarizeProposalProblem({ title, description }) {
-  if (!OLLAMA_API_KEY && OLLAMA_HOST.includes("ollama.com")) {
-    throw new Error(
-      "OLLAMA_API_KEY is required to use the Ollama cloud summary endpoint",
-    );
-  }
-
-  const prompt = buildSummaryPrompt(title, description);
-
-  const response = await ollama.chat({
-    model: OLLAMA_MODEL,
-    messages: [{ role: "user", content: prompt }],
-    stream: true,
+  const data = await callColab("/summarize", {
+    title,
+    description: description || "",
   });
 
-  let summary = "";
-  for await (const part of response) {
-    summary += part?.message?.content || "";
-  }
-
-  summary = summary.trim();
+  const summary = typeof data.summary === "string" ? data.summary.trim() : "";
   if (!summary) {
-    throw new Error("Model returned an empty summary");
+    throw new Error("Colab model returned an empty summary. Try again.");
   }
 
   return summary;
 }
 
+// ── EXPORTS ───────────────────────────────────────────────────────────────────
+// Keep the same shape as before so server.js doesn't need to change.
 module.exports = {
   summarizeProposalProblem,
   generateProposalFromDescription,
-  OLLAMA_MODEL,
-  FEATHERLESS_MODEL,
+  // Legacy named exports (server.js references these in its startup log)
+  OLLAMA_MODEL: "colab-flan-t5-large",
+  FEATHERLESS_MODEL: "colab-flan-t5-large",
 };
